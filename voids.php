@@ -46,7 +46,6 @@ if ($viewType === 'carts') {
     $voids = getVoidedOrders($page, $limit, $dateFilter, $search);
     $total = countVoidedOrders($dateFilter, $search);
 }
-
 $total_pages = ceil($total / $limit);
 ?>
 <!DOCTYPE html>

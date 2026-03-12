@@ -59,6 +59,12 @@ $is_admin = isAdmin();
                         Ingredients
                     </a>
                 </li>
+                <li>
+                    <a href="inventory.php#stock-movements" class="<?php echo basename($_SERVER['PHP_SELF']) == 'inventory.php' ? 'active' : ''; ?>">
+                        <span class="icon">📈</span>
+                        Stock Movements
+                    </a>
+                </li>
             </ul>
         </li>
 

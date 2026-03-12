@@ -41,7 +41,7 @@ $stats['today_sales'] = $today['total'];
 $stats['today_transactions'] = $today['count'];
 
 // Total Inventory Value
-$result = $conn->query("SELECT COALESCE(SUM(stock_quantity * cost_price), 0) as value FROM products WHERE status = 'active'");
+$result = $conn->query("SELECT COALESCE(SUM(stock_quantity * cost), 0) as value FROM products WHERE status = 'active'");
 $stats['inventory_value'] = $result->fetch_assoc()['value'];
 
 // Recent Sales with pagination
@@ -78,6 +78,231 @@ $low_stock_products = $conn->query("
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - POPRIE</title>
     <link rel="stylesheet" href="css/style.css">
+    <style>
+        /* Admin Dashboard POS-Style Overrides */
+        .header-actions .user-info {
+            background: #FFFFFF;
+            padding: 10px 14px;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+            border: 1px solid #f5f5f5;
+        }
+        
+        .btn-logout {
+            background: #DC3545;
+            color: #FFFFFF;
+            padding: 10px 20px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+        
+        .btn-logout:hover {
+            background: #C82333;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(220, 53, 69, 0.3);
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+        
+        .stat-card {
+            background: #FFFFFF;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #f5f5f5;
+            transition: all 0.3s ease;
+            overflow: hidden;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+        }
+        
+        .stat-card-header {
+            padding: 20px 20px 0;
+        }
+        
+        .stat-card-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+        }
+        
+        .stat-card-icon.primary {
+            background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%);
+            color: white;
+        }
+        
+        .stat-card-icon.success {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            color: white;
+        }
+        
+        .stat-card-icon.warning {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            color: white;
+        }
+        
+        .stat-card-icon.danger {
+            background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+            color: white;
+        }
+        
+        .stat-card-body {
+            padding: 16px 20px 20px;
+        }
+        
+        .stat-card-body h3 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #1a1a1a;
+        }
+        
+        .card {
+            background: #FFFFFF;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border: 1px solid #f5f5f5;
+            margin-bottom: 24px;
+        }
+        
+        .card-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .card-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin: 0;
+        }
+        
+        .card-body {
+            padding: 0;
+        }
+        
+        .table-responsive {
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        thead {
+            background: #fafafa;
+        }
+        
+        th {
+            padding: 14px 20px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 13px;
+            color: #666;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        td {
+            padding: 14px 20px;
+            font-size: 14px;
+            color: #444;
+            border-bottom: 1px solid #f5f5f5;
+        }
+        
+        tbody tr:hover {
+            background: #fafafa;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+            display: inline-block;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(211, 47, 47, 0.3);
+        }
+        
+        .badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .badge-success {
+            background: #dcfce7;
+            color: #166534;
+        }
+        
+        .badge-warning {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            padding: 20px;
+        }
+        
+        .pagination a {
+            padding: 8px 14px;
+            border-radius: 8px;
+            background: #f5f5f5;
+            color: #444;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .pagination a:hover {
+            background: #d32f2f;
+            color: white;
+        }
+        
+        .pagination .active {
+            background: #d32f2f;
+            color: white;
+        }
+    </style>
 </head>
 <body>
     <div class="main-wrapper">

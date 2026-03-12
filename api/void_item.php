@@ -80,7 +80,6 @@ if (!$adminId) {
         $lockoutRemaining = getVoidLockoutRemaining($clientIP);
         jsonError("Too many failed attempts. Please wait {$lockoutRemaining} seconds before trying again.", 429);
     }
-    
     jsonError('Invalid admin password', 401);
 }
 

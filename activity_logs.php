@@ -1,8 +1,7 @@
 <?php
 /**
  * Activity Logs Page - Admin Only
- * Real-time system activity monitoring with filtering and pagination
- * Features: AJAX polling every 5 seconds, tamper-resistant display
+ * Real-time system activity monitoring with filtering and pagination.
  */
 
 require_once 'includes/db.php';
@@ -21,7 +20,7 @@ $filterAction = sanitize($_GET['action'] ?? '');
 $filterUser = sanitizeInt($_GET['user'] ?? 0);
 $filterDate = sanitize($_GET['date'] ?? '');
 $page = max(1, sanitizeInt($_GET['page'] ?? 1));
-$realtime = !isset($_GET['page']); // Enable real-time on first load
+$realtime = !isset($_GET['page']);
 
 // Build query
 $where = [];
@@ -81,7 +80,6 @@ $todayStats = dbFetchOne("
     FROM activity_logs 
     WHERE DATE(created_at) = CURDATE()
 ");
-
 // Get last log_id for real-time polling
 $lastLogId = 0;
 if (!empty($logs)) {
@@ -189,7 +187,7 @@ if (!empty($logs)) {
             color: #888;
             font-size: 10px;
         }
-        
+
         .pagination-controls {
             display: flex;
             justify-content: center;
@@ -339,6 +337,7 @@ if (!empty($logs)) {
                 <div class="card-body">
                     <div class="table-responsive">
                         <table id="logsTable">
+                        <table id="logsTable">
                             <thead>
                                 <tr>
                                     <th>Timestamp</th>
@@ -364,6 +363,7 @@ if (!empty($logs)) {
                                         elseif (stripos($log['action'], 'user') !== false) $badgeClass = 'user';
                                         elseif (stripos($log['action'], 'security') !== false) $badgeClass = 'security';
                                         ?>
+                                        <tr data-log-id="<?php echo $log['log_id']; ?>">
                                         <tr data-log-id="<?php echo $log['log_id']; ?>">
                                             <td><?php echo date('M d, Y H:i:s', strtotime($log['created_at'])); ?></td>
                                             <td>
