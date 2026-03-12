@@ -54,9 +54,9 @@ $is_admin = isAdmin();
                     </a>
                 </li>
                 <li>
-                    <a href="inventory.php#stock-movements" class="<?php echo basename($_SERVER['PHP_SELF']) == 'inventory.php' ? 'active' : ''; ?>">
-                        <span class="icon">📈</span>
-                        Stock Movements
+                    <a href="ingredients.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'ingredients.php' ? 'active' : ''; ?>">
+                        <span class="icon">🧪</span>
+                        Ingredients
                     </a>
                 </li>
             </ul>
@@ -99,6 +99,12 @@ $is_admin = isAdmin();
             <a href="voids.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'voids.php' ? 'active' : ''; ?>">
                 <span class="icon">❌</span>
                 Voided Sales
+            </a>
+        </li>
+        <li>
+            <a href="activity_logs.php" class="<?php echo basename($_SERVER['PHP_SELF']) == 'activity_logs.php' ? 'active' : ''; ?>">
+                <span class="icon">📋</span>
+                Activity Logs
             </a>
         </li>
         <?php endif; ?>

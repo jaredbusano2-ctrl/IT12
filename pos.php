@@ -1,9 +1,20 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
+
+// Set security headers
+setSecurityHeaders();
 
 requireLogin();
+
+// Check page access based on role
+checkPageAccess();
+
 $user = getCurrentUser();
+
+// Generate CSRF token for AJAX requests
+$csrfToken = getCSRFTokenForAjax();
 
 // Get all active products with categories
 $products = $conn->query("
@@ -16,6 +27,24 @@ $products = $conn->query("
 
 // Get categories for filter
 $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC");
+
+// Get product cup sizes for JavaScript
+$cupSizesQuery = $conn->query("
+    SELECT pcs.product_id, pcs.cup_id, pcs.price, ci.cup_size 
+    FROM product_cup_sizes pcs
+    JOIN cup_inventory ci ON pcs.cup_id = ci.cup_id
+    WHERE ci.status = 'active'
+    ORDER BY pcs.product_id, ci.cup_id
+");
+
+$productCupSizes = [];
+while ($row = $cupSizesQuery->fetch_assoc()) {
+    $productCupSizes[$row['product_id']][] = [
+        'cup_id' => (int)$row['cup_id'],
+        'cup_size' => $row['cup_size'],
+        'price' => (float)$row['price']
+    ];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -138,14 +167,13 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
             border-radius: 10px;
             position: relative;
-            transition: all 0.3s ease;
-            overflow-y: auto;
+            transition: box-shadow 0.3s ease;
             border: 1px solid #f5f5f5;
+            overflow: visible;
         }
 
         .pos-cart:hover {
             box-shadow: 0 4px 12px rgba(211, 47, 47, 0.08);
-            transform: translateY(-1px);
         }
 
         .pos-products > div:first-child {
@@ -200,6 +228,37 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
 
         .product-card:hover::before {
             opacity: 1;
+        }
+
+        .cup-size-buttons {
+            display: flex;
+            gap: 6px;
+            justify-content: center;
+            margin: 8px 0;
+        }
+
+        .cup-btn {
+            padding: 5px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            background: #f8f8f8;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: #555;
+        }
+
+        .cup-btn:hover {
+            border-color: #d32f2f;
+            color: #d32f2f;
+            background: #fff;
+        }
+
+        .cup-btn.selected {
+            border-color: #d32f2f;
+            background: #d32f2f;
+            color: white;
         }
 
         .product-card h4 {
@@ -377,62 +436,31 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
 
         .cart-actions {
             display: flex;
-            gap: 12px;
-            padding: 0 24px 24px 24px;
+            flex-direction: column;
+            gap: 10px;
+            padding: 16px 24px 24px 24px;
+            position: relative;
+            z-index: 10;
         }
 
         .cart-actions button {
-            flex: 1;
-            padding: 14px;
+            width: 100%;
+            padding: 12px 16px;
             border: none;
-            border-radius: 10px;
+            border-radius: 8px;
             font-weight: 700;
             cursor: pointer;
-            transition: all 0.3s ease;
             font-size: 13px;
             letter-spacing: 0.5px;
             text-transform: uppercase;
         }
 
-        .cart-actions .btn-clear {
-            background: linear-gradient(135deg, #E8E8E8 0%, #E0E0E0 100%);
-            color: #444;
-            border: 1px solid #d0d0d0;
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+        .cart-actions button:hover {
+            opacity: 0.9;
         }
 
-        .cart-actions .btn-clear:hover {
-            background: linear-gradient(135deg, #D8D8D8 0%, #D0D0D0 100%);
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
-            transform: translateY(-2px);
-        }
-
-        .cart-actions .btn-checkout {
-            background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%);
-            color: white;
-            box-shadow: 0 6px 20px rgba(211, 47, 47, 0.25);
-            position: relative;
-            overflow: hidden;
-        }
-
-        .cart-actions .btn-checkout::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.2);
-            transition: left 0.3s ease;
-        }
-
-        .cart-actions .btn-checkout:hover {
-            box-shadow: 0 10px 28px rgba(211, 47, 47, 0.35);
-            transform: translateY(-3px);
-        }
-
-        .cart-actions .btn-checkout:hover::before {
-            left: 100%;
+        .cart-actions button:active {
+            opacity: 0.8;
         }
 
         .form-control {
@@ -725,18 +753,48 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
                 </div>
                 
                 <div class="product-grid">
-                    <?php while ($product = $products->fetch_assoc()): ?>
+                    <?php while ($product = $products->fetch_assoc()): 
+                        $hasCupSizes = isset($productCupSizes[$product['product_id']]);
+                        $cupSizesJson = $hasCupSizes ? htmlspecialchars(json_encode($productCupSizes[$product['product_id']])) : '[]';
+                        // Support both 'price' and 'selling_price' column names
+                        $basePrice = $product['selling_price'] ?? $product['price'] ?? 0;
+                        // If product has cup sizes, use the first cup size price as base
+                        if ($hasCupSizes) {
+                            $basePrice = $productCupSizes[$product['product_id']][0]['price'];
+                        }
+                    ?>
                         <div class="product-card"
                              data-id="<?php echo $product['product_id']; ?>"
                              data-code="<?php echo htmlspecialchars($product['product_code']); ?>"
                              data-name="<?php echo htmlspecialchars($product['product_name']); ?>"
-                             data-price="<?php echo $product['selling_price']; ?>"
+                             data-price="<?php echo $basePrice; ?>"
                              data-stock="<?php echo $product['stock_quantity']; ?>"
                              data-category="<?php echo $product['category_id']; ?>"
-                             onclick="addToCart(this)">
+                             data-is-drink="<?php echo ($product['requires_cup'] || $product['is_drink']) ? 'true' : 'false'; ?>"
+                             data-cup-sizes='<?php echo $cupSizesJson; ?>'
+                             onclick="handleProductClick(this, event)">
                              
                             <h4><?php echo htmlspecialchars($product['product_name']); ?></h4>
-                            <div class="price">₱<?php echo number_format($product['selling_price'], 2); ?></div>
+                            
+                            <?php if ($hasCupSizes && count($productCupSizes[$product['product_id']]) > 0): ?>
+                                <div class="cup-size-buttons">
+                                    <?php foreach ($productCupSizes[$product['product_id']] as $cupSize): ?>
+                                        <button type="button" class="cup-btn" 
+                                                data-cup-id="<?php echo $cupSize['cup_id']; ?>"
+                                                data-cup-size="<?php echo $cupSize['cup_size']; ?>"
+                                                data-price="<?php echo $cupSize['price']; ?>"
+                                                onclick="selectCupSize(this, event)">
+                                            <?php echo $cupSize['cup_size']; ?>
+                                        </button>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="price" data-base-price="<?php echo $basePrice; ?>">
+                                    ₱<?php echo number_format($basePrice, 2); ?>
+                                </div>
+                            <?php else: ?>
+                                <div class="price">₱<?php echo number_format($product['selling_price'] ?? $product['price'] ?? 0, 2); ?></div>
+                            <?php endif; ?>
+                            
                             <div class="stock">Stock: <?php echo $product['stock_quantity']; ?></div>
                         </div>
                     <?php endwhile; ?>
@@ -770,10 +828,17 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
                     </div>
                 </div>
                 
-                <div style="margin-top: 16px; display: flex; gap: 8px;">
-                    <button class="btn btn-danger" onclick="clearCart()" style="flex:1;">Clear</button>
-                    <button class="btn-void" onclick="openSaleVoidModal()" style="flex:1; padding: 12px 16px; font-size: 13px;">Void Sale</button>
-                    <button class="btn btn-success" onclick="openCheckout()" style="flex:2;">Complete Sale</button>
+                <!-- Cart Action Buttons -->
+                <div class="cart-actions">
+                    <button type="button" id="clearCartBtn" style="background: #dc3545; color: white;">
+                        🗑️ CLEAR CART
+                    </button>
+                    <button type="button" id="voidCartBtn" style="background: #6c757d; color: white;">
+                        ⚠️ VOID CART
+                    </button>
+                    <button type="button" id="completeSaleBtn" style="background: #28a745; color: white;">
+                        ✓ COMPLETE SALE
+                    </button>
                 </div>
             </div>
         </div>
@@ -862,25 +927,25 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
     </div>
 </div>
 
-<!-- ITEM VOID AUTHORIZATION MODAL -->
+<!-- CART VOID AUTHORIZATION MODAL -->
 <div id="voidModal" class="modal">
-    <div class="modal-content" style="max-width: 450px;">
+    <div class="modal-content" style="max-width: 500px;">
         <div class="modal-header">
-            <h2>Void Item Authorization</h2>
+            <h2>Void Cart Authorization</h2>
             <button class="modal-close" onclick="document.getElementById('voidModal').classList.remove('active'); document.getElementById('voidForm').reset();">&times;</button>
         </div>
         
         <div class="modal-body">
             <div style="margin-bottom: 16px;">
                 <p style="color: #666; font-size: 13px; margin: 0 0 16px 0;">
-                    This item requires admin authorization to void.
+                    All items below will be voided. This requires admin authorization.
                 </p>
                 
                 <div style="margin-bottom: 16px;">
                     <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
-                        Item to Void
+                        Items to Void
                     </label>
-                    <div id="voidItemName" style="padding: 8px 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; font-weight: 500; color: #495057;"></div>
+                    <div id="voidItemsList" style="max-height: 200px; overflow-y: auto; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 12px; font-size: 14px; color: #333;"></div>
                 </div>
                 
                 <form id="voidForm" method="POST" action="">
@@ -923,6 +988,112 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
     </div>
 </div>
 
+<!-- SINGLE ITEM VOID MODAL -->
+<div id="itemVoidModal" class="modal">
+    <div class="modal-content" style="max-width: 450px;">
+        <div class="modal-header">
+            <h2>Void Item</h2>
+            <button class="modal-close" onclick="closeItemVoidModal()">&times;</button>
+        </div>
+        
+        <div class="modal-body">
+            <div style="margin-bottom: 16px;">
+                <p style="color: #666; font-size: 13px; margin: 0 0 16px 0;">
+                    This action requires admin authorization to void.
+                </p>
+                
+                <!-- Item Details Display -->
+                <div style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <tr>
+                            <td style="padding: 4px 0; color: #666;">Product:</td>
+                            <td style="padding: 4px 0; font-weight: 600; text-align: right;" id="itemVoidName">-</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 0; color: #666;">Quantity:</td>
+                            <td style="padding: 4px 0; font-weight: 600; text-align: right;" id="itemVoidQty">-</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 0; color: #666;">Price:</td>
+                            <td style="padding: 4px 0; font-weight: 600; text-align: right;" id="itemVoidPrice">-</td>
+                        </tr>
+                        <tr style="border-top: 1px solid #dee2e6;">
+                            <td style="padding: 8px 0 4px 0; color: #333; font-weight: 600;">Subtotal:</td>
+                            <td style="padding: 8px 0 4px 0; font-weight: 700; text-align: right; color: #d32f2f;" id="itemVoidSubtotal">-</td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <form id="itemVoidForm" onsubmit="handleItemVoid(event)">
+                    <div class="form-group">
+                        <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
+                            Admin Password <span style="color: #d32f2f;">*</span>
+                        </label>
+                        <input type="password" class="form-control" id="itemVoidAdminPassword" name="admin_password"
+                               placeholder="Enter admin password" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
+                            Void Reason <span style="color: #d32f2f;">*</span>
+                        </label>
+                        <textarea class="form-control" id="itemVoidReason" name="void_reason"
+                                  placeholder="Enter reason for voiding this item..." 
+                                  rows="3" required 
+                                  style="resize: vertical; font-family: inherit;"></textarea>
+                        <div style="font-size: 11px; color: #999; margin-top: 4px;">
+                            <span id="itemVoidCharCount">0</span>/500 characters
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 8px; margin-top: 20px;">
+                        <button type="button" class="btn btn-secondary" 
+                                onclick="closeItemVoidModal()" style="flex: 1;">
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn btn-danger" style="flex: 1;">
+                            Void Item
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Security: CSRF Token for AJAX requests -->
+<script>
+    window.POS_CONFIG = {
+        csrfToken: '<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>',
+        userRole: '<?php echo htmlspecialchars($user['role'], ENT_QUOTES, 'UTF-8'); ?>',
+        userId: '<?php echo $user['user_id']; ?>'
+    };
+</script>
 <script src="js/pos.js"></script>
+
+<!-- Button Event Listeners -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('POS Page loaded successfully');
+    console.log('Cart functions available:', {
+        clearCartConfirm: typeof window.clearCartConfirm,
+        openSaleVoidModal: typeof window.openSaleVoidModal,
+        openCheckout: typeof window.openCheckout
+    });
+    
+    // Item Void Reason character counter
+    const itemVoidReason = document.getElementById('itemVoidReason');
+    if (itemVoidReason) {
+        itemVoidReason.addEventListener('input', function() {
+            const cnt = this.value.length;
+            document.getElementById('itemVoidCharCount').textContent = cnt;
+            if (cnt > 500) {
+                this.value = this.value.substring(0, 500);
+                document.getElementById('itemVoidCharCount').textContent = '500';
+            }
+        });
+    }
+});
+</script>
 </body>
 </html>

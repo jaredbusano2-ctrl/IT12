@@ -1,6 +1,10 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
+
+// Set security headers
+setSecurityHeaders();
 
 // Redirect if already logged in
 if (isLoggedIn()) {
@@ -9,17 +13,68 @@ if (isLoggedIn()) {
 }
 
 $error = '';
+$lockoutMessage = '';
+$attemptsRemaining = SECURITY_CONFIG['max_login_attempts'];
+
+// Check for session timeout message
+if (isset($_GET['timeout'])) {
+    $error = 'Your session has expired. Please log in again.';
+}
+
+// Check IP-based lockout
+$clientIP = getClientIP();
+if (isLockedOut($clientIP, 'login')) {
+    $remainingSeconds = getLockoutRemaining($clientIP, 'login');
+    $remainingMinutes = ceil($remainingSeconds / 60);
+    $lockoutMessage = "Too many failed attempts. Please try again in {$remainingMinutes} minute(s).";
+}
 
 // Handle login form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $username = $_POST['username'] ?? '';
-    $password = $_POST['password'] ?? '';
-    
-    if (loginUser($conn, $username, $password)) {
-        header('Location: index.php');
-        exit();
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($lockoutMessage)) {
+    // Verify CSRF token
+    $csrfToken = $_POST['csrf_token'] ?? '';
+    if (!verifyCSRFToken($csrfToken)) {
+        $error = 'Security token expired. Please try again.';
+        logActivity('csrf_failure', 'Login form CSRF validation failed');
     } else {
-        $error = 'Invalid username or password';
+        $username = sanitize($_POST['username'] ?? '');
+        $password = $_POST['password'] ?? '';
+        
+        // Check username-specific lockout
+        if (isLockedOut($username, 'login')) {
+            $remainingSeconds = getLockoutRemaining($username, 'login');
+            $remainingMinutes = ceil($remainingSeconds / 60);
+            $error = "Account temporarily locked. Please try again in {$remainingMinutes} minute(s).";
+        } else {
+            if (loginUser($conn, $username, $password)) {
+                // Successful login - reset attempts
+                resetAttempts($username, 'login');
+                resetAttempts($clientIP, 'login');
+                
+                // Regenerate session ID for security
+                session_regenerate_id(true);
+                $_SESSION['session_created'] = time();
+                
+                logActivity('login_success', "User '{$username}' logged in successfully");
+                
+                header('Location: index.php');
+                exit();
+            } else {
+                // Failed login - record attempt
+                $usernameResult = recordFailedAttempt($username, 'login');
+                $ipResult = recordFailedAttempt($clientIP, 'login');
+                
+                logActivity('login_failed', "Failed login attempt for user '{$username}'");
+                
+                if ($usernameResult['locked'] || $ipResult['locked']) {
+                    $error = 'Account temporarily locked due to too many failed attempts.';
+                } else {
+                    $remaining = min($usernameResult['remaining'], $ipResult['remaining']);
+                    $attemptsRemaining = $remaining;
+                    $error = "Invalid username or password. {$remaining} attempt(s) remaining.";
+                }
+            }
+        }
     }
 }
 ?>
@@ -253,24 +308,29 @@ button:hover {
                 <p>Sign in to your account</p>
             </div>
 
-            <?php if ($error): ?>
+            <?php if ($lockoutMessage): ?>
+                <div class="alert alert-danger">
+                    🔒 <?php echo htmlspecialchars($lockoutMessage); ?>
+                </div>
+            <?php elseif ($error): ?>
                 <div class="alert alert-danger">
                     <?php echo htmlspecialchars($error); ?>
                 </div>
             <?php endif; ?>
 
-            <form method="POST">
+            <form method="POST" <?php echo $lockoutMessage ? 'style="opacity: 0.5; pointer-events: none;"' : ''; ?>>
+                <?php echo csrfField(); ?>
                 <div class="form-group">
                     <label>Username</label>
-                    <input type="text" name="username" class="form-control" required autofocus>
+                    <input type="text" name="username" class="form-control" required autofocus <?php echo $lockoutMessage ? 'disabled' : ''; ?>>
                 </div>
 
                 <div class="form-group">
                     <label>Password</label>
-                    <input type="password" name="password" class="form-control" required>
+                    <input type="password" name="password" class="form-control" required <?php echo $lockoutMessage ? 'disabled' : ''; ?>>
                 </div>
 
-                <button type="submit">LOGIN</button>
+                <button type="submit" <?php echo $lockoutMessage ? 'disabled' : ''; ?>>LOGIN</button>
             </form>
 
         </div>

@@ -1,10 +1,19 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
 
+setSecurityHeaders();
 requireLogin();
-requireCategoriesAccess(); // Only admin can access categories
+checkPageAccess();
+requirePermission('manage_categories');
+
 $user = getCurrentUser();
+
+// Validate CSRF for POST operations
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    validateCSRFRequest();
+}
 
 // Handle category operations
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -12,6 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $conn->prepare("INSERT INTO categories (category_name, description) VALUES (?, ?)");
         $stmt->bind_param("ss", $_POST['category_name'], $_POST['description']);
         $stmt->execute();
+        logActivity('category_added', "Added category: " . sanitize($_POST['category_name']));
         header('Location: categories.php?success=added');
         exit();
     } elseif (isset($_POST['edit_category'])) {
@@ -260,6 +270,7 @@ $categories = $conn->query("
             </div>
             <div class="modal-body">
                 <form method="POST" action="" id="categoryForm">
+                    <?php echo csrfField(); ?>
                     <input type="hidden" name="category_id" id="categoryId">
                     
                     <div class="form-group">
