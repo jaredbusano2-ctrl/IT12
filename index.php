@@ -1,8 +1,17 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
+require_once 'includes/inventory_functions.php';
+
+// Set security headers
+setSecurityHeaders();
 
 requireLogin();
+
+// Check page access based on role
+checkPageAccess();
+
 $user = getCurrentUser();
 
 // Redirect cashiers to POS
@@ -10,6 +19,9 @@ if ($user['role'] === 'cashier') {
     header('Location: pos.php');
     exit();
 }
+
+// Get low stock alerts
+$lowStockAlerts = getLowStockAlerts();
 
 // Get statistics
 $stats = [];
@@ -135,6 +147,200 @@ $low_stock_products = $conn->query("
                     </div>
                 </div>
             </div>
+            
+            <!-- Security Alerts Section (Admin Only) -->
+            <?php if (isAdmin()): ?>
+            <div id="securityAlerts" class="security-alerts-container" style="display: none;">
+                <div class="card security-card">
+                    <div class="card-header">
+                        <h3>🔒 Security Overview</h3>
+                        <span id="securityLastUpdate" style="font-size: 11px; color: #888;"></span>
+                    </div>
+                    <div class="card-body">
+                        <div class="security-stats-grid">
+                            <div class="security-stat">
+                                <span class="security-stat-value" id="failedLoginsToday">-</span>
+                                <span class="security-stat-label">Failed Logins Today</span>
+                            </div>
+                            <div class="security-stat">
+                                <span class="security-stat-value" id="lockedAccounts">-</span>
+                                <span class="security-stat-label">Locked Accounts</span>
+                            </div>
+                            <div class="security-stat">
+                                <span class="security-stat-value" id="voidsToday">-</span>
+                                <span class="security-stat-label">Voids Today</span>
+                            </div>
+                            <div class="security-stat">
+                                <span class="security-stat-value" id="activeUsersToday">-</span>
+                                <span class="security-stat-label">Active Users</span>
+                            </div>
+                        </div>
+                        
+                        <div id="securityAlertsList" class="security-alerts-list" style="display: none;">
+                            <h4 style="margin: 16px 0 8px; color: #c62828;">⚠️ Security Alerts</h4>
+                            <div id="alertsContent"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <style>
+                .security-alerts-container {
+                    margin-bottom: 24px;
+                }
+                
+                .security-card {
+                    border-left: 4px solid #1976d2;
+                }
+                
+                .security-card.has-alerts {
+                    border-left-color: #c62828;
+                }
+                
+                .security-stats-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+                    gap: 16px;
+                }
+                
+                .security-stat {
+                    text-align: center;
+                    padding: 12px;
+                    background: #f5f5f5;
+                    border-radius: 8px;
+                }
+                
+                .security-stat-value {
+                    display: block;
+                    font-size: 24px;
+                    font-weight: 700;
+                    color: #333;
+                }
+                
+                .security-stat-value.alert {
+                    color: #c62828;
+                }
+                
+                .security-stat-label {
+                    font-size: 11px;
+                    color: #666;
+                    text-transform: uppercase;
+                }
+                
+                .security-alerts-list {
+                    margin-top: 16px;
+                    padding-top: 16px;
+                    border-top: 1px solid #eee;
+                }
+                
+                .security-alert-item {
+                    padding: 8px 12px;
+                    background: #ffebee;
+                    border-radius: 6px;
+                    margin-bottom: 8px;
+                    font-size: 13px;
+                    border-left: 3px solid #c62828;
+                }
+                
+                .security-alert-item.high { border-left-color: #c62828; }
+                .security-alert-item.medium { border-left-color: #ff9800; }
+                .security-alert-item.low { border-left-color: #ffc107; background: #fff8e1; }
+                
+                .alert-time {
+                    font-size: 10px;
+                    color: #888;
+                }
+            </style>
+            
+            <script>
+                // Fetch security dashboard data
+                async function fetchSecurityData() {
+                    try {
+                        const response = await fetch('api/get-security-dashboard.php');
+                        const data = await response.json();
+                        
+                        if (data.success) {
+                            // Show the security section
+                            document.getElementById('securityAlerts').style.display = 'block';
+                            
+                            // Update stats
+                            const failedLogins = data.security.failed_logins_today;
+                            const lockedAccounts = data.security.locked_accounts;
+                            const voidsToday = data.voids.count_today;
+                            const activeUsers = data.activity.active_users_today;
+                            
+                            document.getElementById('failedLoginsToday').textContent = failedLogins;
+                            document.getElementById('failedLoginsToday').className = 
+                                'security-stat-value' + (failedLogins > 5 ? ' alert' : '');
+                            
+                            document.getElementById('lockedAccounts').textContent = lockedAccounts;
+                            document.getElementById('lockedAccounts').className = 
+                                'security-stat-value' + (lockedAccounts > 0 ? ' alert' : '');
+                            
+                            document.getElementById('voidsToday').textContent = voidsToday;
+                            document.getElementById('activeUsersToday').textContent = activeUsers;
+                            
+                            // Show alerts if any
+                            const alertsList = document.getElementById('securityAlertsList');
+                            const alertsContent = document.getElementById('alertsContent');
+                            const securityCard = document.querySelector('.security-card');
+                            
+                            if (data.security.alerts.length > 0 || 
+                                data.security.suspicious_activities.length > 0) {
+                                alertsList.style.display = 'block';
+                                securityCard.classList.add('has-alerts');
+                                
+                                let alertsHtml = '';
+                                
+                                // Security alerts
+                                data.security.alerts.forEach(alert => {
+                                    alertsHtml += `
+                                        <div class="security-alert-item ${alert.severity}">
+                                            <strong>${alert.alert_type}</strong>: ${escapeHtml(alert.description)}
+                                            <span class="alert-time">${alert.created_at}</span>
+                                        </div>
+                                    `;
+                                });
+                                
+                                // Suspicious activities
+                                data.security.suspicious_activities.forEach(activity => {
+                                    alertsHtml += `
+                                        <div class="security-alert-item medium">
+                                            <strong>${activity.action}</strong>: ${escapeHtml(activity.details || '')}
+                                            <span class="alert-time">${activity.created_at}</span>
+                                        </div>
+                                    `;
+                                });
+                                
+                                alertsContent.innerHTML = alertsHtml;
+                            } else {
+                                alertsList.style.display = 'none';
+                                securityCard.classList.remove('has-alerts');
+                            }
+                            
+                            // Update timestamp
+                            document.getElementById('securityLastUpdate').textContent = 
+                                'Updated: ' + new Date().toLocaleTimeString();
+                        }
+                    } catch (error) {
+                        console.error('Security dashboard error:', error);
+                    }
+                }
+                
+                function escapeHtml(text) {
+                    if (!text) return '';
+                    const div = document.createElement('div');
+                    div.textContent = text;
+                    return div.innerHTML;
+                }
+                
+                // Fetch on load and every 30 seconds
+                document.addEventListener('DOMContentLoaded', function() {
+                    fetchSecurityData();
+                    setInterval(fetchSecurityData, 30000);
+                });
+            </script>
+            <?php endif; ?>
             
             <div class="card">
                 <div class="card-header">

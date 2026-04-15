@@ -1,8 +1,13 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
 
+setSecurityHeaders();
 requireLogin();
+checkPageAccess();
+requirePermission('manage_products');
+
 $user = getCurrentUser();
 
 // Pagination settings
@@ -15,6 +20,9 @@ $selected_category = isset($_GET['category']) ? (int)$_GET['category'] : '';
 
 // Handle product add/edit/delete
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Validate CSRF token
+    validateCSRFRequest();
+    
     if (isset($_POST['add_product'])) {
         $stmt = $conn->prepare("INSERT INTO products (product_code, product_name, category_id, description, cost_price, selling_price, stock_quantity, reorder_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->bind_param("ssissdii", 
@@ -28,6 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_POST['reorder_level']
         );
         $stmt->execute();
+        logActivity('product_added', "Added product: " . sanitize($_POST['product_name']));
         header('Location: products.php?success=added');
         exit();
     } elseif (isset($_POST['edit_product'])) {
@@ -43,11 +52,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_POST['product_id']
         );
         $stmt->execute();
+        logActivity('product_updated', "Updated product: " . sanitize($_POST['product_name']));
         header('Location: products.php?success=updated');
         exit();
     } elseif (isset($_POST['delete_product'])) {
-        $product_id = $_POST['product_id'];
+        $product_id = sanitizeInt($_POST['product_id']);
         $conn->query("UPDATE products SET status='inactive' WHERE product_id=$product_id");
+        logActivity('product_deleted', "Deactivated product ID: $product_id");
         header('Location: products.php?success=deleted');
         exit();
     }
@@ -231,8 +242,8 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
                                             <td><strong><?php echo htmlspecialchars($product['product_code']); ?></strong></td>
                                             <td><?php echo htmlspecialchars($product['product_name']); ?></td>
                                             <td><?php echo htmlspecialchars($product['category_name']); ?></td>
-                                            <td>₱<?php echo number_format($product['cost_price'], 2); ?></td>
-                                            <td>₱<?php echo number_format($product['selling_price'], 2); ?></td>
+                                            <td>₱<?php echo number_format($product['cost_price'] ?? $product['cost'] ?? 0, 2); ?></td>
+                                            <td>₱<?php echo number_format($product['selling_price'] ?? $product['price'] ?? 0, 2); ?></td>
                                             <td><strong><?php echo $product['stock_quantity']; ?></strong></td>
                                             <td><?php echo $product['reorder_level']; ?></td>
                                             <td>
@@ -291,6 +302,7 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
             </div>
             <div class="modal-body">
                 <form method="POST" action="" id="productForm">
+                    <?php echo csrfField(); ?>
                     <input type="hidden" name="product_id" id="productId">
                     
                     <div class="form-row">
@@ -362,6 +374,7 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
             </div>
             <div class="modal-body">
                 <form method="POST" action="" id="stockForm">
+                    <?php echo csrfField(); ?>
                     <input type="hidden" name="product_id" id="stockProductId">
                     <input type="hidden" name="adjust_stock" value="1">
                     
@@ -417,8 +430,8 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
             document.getElementById('productName').value = product.product_name;
             document.getElementById('categoryId').value = product.category_id || '';
             document.getElementById('description').value = product.description || '';
-            document.getElementById('costPrice').value = product.cost_price;
-            document.getElementById('sellingPrice').value = product.selling_price;
+            document.getElementById('costPrice').value = product.cost;
+            document.getElementById('sellingPrice').value = product.price;
             document.getElementById('stockQuantity').value = product.stock_quantity;
             document.getElementById('stockQuantity').disabled = true;
             document.getElementById('reorderLevel').value = product.reorder_level;

@@ -343,11 +343,9 @@ $total = $subtotal + $tax;
                     // Clear cart from sessionStorage
                     sessionStorage.removeItem('posCart');
                     
-                    // Redirect to POS or receipt
-                    if (confirm('Would you like to view the receipt?')) {
-                        window.open('receipt.php?invoice=' + result.invoice, '_blank');
-                    }
-                    window.location.href = 'pos.php';
+                    // After clicking OK on the alert, show receipt in the same tab
+                    const receiptUrl = 'receipt.php?invoice=' + encodeURIComponent(result.invoice);
+                    window.location.href = receiptUrl;
                 } else {
                     alert('Error: ' + result.message);
                 }

@@ -1,9 +1,20 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
+
+// Set security headers
+setSecurityHeaders();
 
 requireLogin();
+
+// Check page access based on role
+checkPageAccess();
+
 $user = getCurrentUser();
+
+// Generate CSRF token for AJAX requests
+$csrfToken = getCSRFTokenForAjax();
 
 // Get all active products with categories
 $products = $conn->query("
@@ -16,6 +27,37 @@ $products = $conn->query("
 
 // Get categories for filter
 $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC");
+
+// Get product cup sizes and default cups (12oz/16oz) so drinks can choose size
+$cupSizesQuery = $conn->query("
+    SELECT pcs.product_id, pcs.cup_id, pcs.price, ci.cup_size
+    FROM product_cup_sizes pcs
+    JOIN cup_inventory ci ON pcs.cup_id = ci.cup_id
+    WHERE ci.status = 'active'
+    ORDER BY pcs.product_id, ci.cup_id
+");
+
+$productCupSizes = [];
+if ($cupSizesQuery) {
+    while ($row = $cupSizesQuery->fetch_assoc()) {
+        $productCupSizes[(int)$row['product_id']][] = [
+            'cup_id' => (int)$row['cup_id'],
+            'cup_size' => $row['cup_size'],
+            'price' => (float)$row['price']
+        ];
+    }
+}
+
+$defaultCupIds = [];
+$defaultCupsQuery = $conn->query("SELECT cup_id, cup_size FROM cup_inventory WHERE status = 'active'");
+if ($defaultCupsQuery) {
+    while ($cup = $defaultCupsQuery->fetch_assoc()) {
+        $normalized = strtolower(preg_replace('/\s+/', '', (string)$cup['cup_size']));
+        if ($normalized === '12oz' || $normalized === '16oz') {
+            $defaultCupIds[$normalized] = (int)$cup['cup_id'];
+        }
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -138,14 +180,13 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
             border-radius: 10px;
             position: relative;
-            transition: all 0.3s ease;
-            overflow-y: auto;
+            transition: box-shadow 0.3s ease;
             border: 1px solid #f5f5f5;
+            overflow: visible;
         }
 
         .pos-cart:hover {
             box-shadow: 0 4px 12px rgba(211, 47, 47, 0.08);
-            transform: translateY(-1px);
         }
 
         .pos-products > div:first-child {
@@ -200,6 +241,37 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
 
         .product-card:hover::before {
             opacity: 1;
+        }
+
+        .cup-size-buttons {
+            display: flex;
+            gap: 6px;
+            justify-content: center;
+            margin: 8px 0;
+        }
+
+        .cup-btn {
+            padding: 5px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            background: #f8f8f8;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: #555;
+        }
+
+        .cup-btn:hover {
+            border-color: #d32f2f;
+            color: #d32f2f;
+            background: #fff;
+        }
+
+        .cup-btn.selected {
+            border-color: #d32f2f;
+            background: #d32f2f;
+            color: white;
         }
 
         .product-card h4 {
@@ -377,62 +449,31 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
 
         .cart-actions {
             display: flex;
-            gap: 12px;
-            padding: 0 24px 24px 24px;
+            flex-direction: column;
+            gap: 10px;
+            padding: 16px 24px 24px 24px;
+            position: relative;
+            z-index: 10;
         }
 
         .cart-actions button {
-            flex: 1;
-            padding: 14px;
+            width: 100%;
+            padding: 12px 16px;
             border: none;
-            border-radius: 10px;
+            border-radius: 8px;
             font-weight: 700;
             cursor: pointer;
-            transition: all 0.3s ease;
             font-size: 13px;
             letter-spacing: 0.5px;
             text-transform: uppercase;
         }
 
-        .cart-actions .btn-clear {
-            background: linear-gradient(135deg, #E8E8E8 0%, #E0E0E0 100%);
-            color: #444;
-            border: 1px solid #d0d0d0;
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+        .cart-actions button:hover {
+            opacity: 0.9;
         }
 
-        .cart-actions .btn-clear:hover {
-            background: linear-gradient(135deg, #D8D8D8 0%, #D0D0D0 100%);
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
-            transform: translateY(-2px);
-        }
-
-        .cart-actions .btn-checkout {
-            background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%);
-            color: white;
-            box-shadow: 0 6px 20px rgba(211, 47, 47, 0.25);
-            position: relative;
-            overflow: hidden;
-        }
-
-        .cart-actions .btn-checkout::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.2);
-            transition: left 0.3s ease;
-        }
-
-        .cart-actions .btn-checkout:hover {
-            box-shadow: 0 10px 28px rgba(211, 47, 47, 0.35);
-            transform: translateY(-3px);
-        }
-
-        .cart-actions .btn-checkout:hover::before {
-            left: 100%;
+        .cart-actions button:active {
+            opacity: 0.8;
         }
 
         .form-control {
@@ -725,18 +766,106 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
                 </div>
                 
                 <div class="product-grid">
-                    <?php while ($product = $products->fetch_assoc()): ?>
+                    <?php while ($product = $products->fetch_assoc()):
+                        $productId = (int)$product['product_id'];
+                        $hasDrinkFlags = array_key_exists('requires_cup', $product) || array_key_exists('is_drink', $product);
+                        $isDrink = $hasDrinkFlags
+                            ? (!empty($product['requires_cup']) || !empty($product['is_drink']))
+                            : (isset($product['category_name']) && preg_match('/coffee|matcha|frappe|non[-\s]?coffee|beverage|tea|juice|chocolate/i', (string)$product['category_name']));
+
+                        // Base price (api/process-sale.php verifies against selling_price)
+                        $baseProductPrice = $product['selling_price'] ?? $product['price'] ?? 0;
+
+                        $cupOptions = $productCupSizes[$productId] ?? [];
+                        if ($isDrink && !empty($defaultCupIds)) {
+                            $categoryName = (string)($product['category_name'] ?? '');
+                            $productName = (string)($product['product_name'] ?? '');
+
+                            // Requirement: only HOT coffee/beverages and MATCHA have 12oz+16oz.
+                            // Everything else that is a drink should be 16oz only.
+                            $isMatcha = preg_match('/matcha/i', $categoryName) === 1 || preg_match('/matcha/i', $productName) === 1;
+                            $isHot = preg_match('/\bhot\b/i', $productName) === 1;
+                            $isCoffeeCategory = preg_match('/coffee/i', $categoryName) === 1;
+                            $isIced = preg_match('/\biced\b/i', $productName) === 1;
+
+                            $allowTwoSizes = $isMatcha || ($isCoffeeCategory && !$isIced) || $isHot;
+                            $desiredSizes = $allowTwoSizes ? ['12oz', '16oz'] : ['16oz'];
+
+                            $bySize = [];
+                            foreach ($cupOptions as $opt) {
+                                if (!empty($opt['cup_size'])) {
+                                    $key = strtolower(preg_replace('/\s+/', '', (string)$opt['cup_size']));
+                                    $bySize[$key] = $opt;
+                                }
+                            }
+
+                            $fallbackPrice = $baseProductPrice;
+                            if (!empty($cupOptions) && isset($cupOptions[0]['price'])) {
+                                $fallbackPrice = (float)$cupOptions[0]['price'];
+                            }
+
+                            foreach ($desiredSizes as $sizeKey) {
+                                if (isset($defaultCupIds[$sizeKey]) && !isset($bySize[$sizeKey])) {
+                                    $bySize[$sizeKey] = [
+                                        'cup_id' => (int)$defaultCupIds[$sizeKey],
+                                        'cup_size' => $sizeKey,
+                                        'price' => (float)$fallbackPrice
+                                    ];
+                                }
+                            }
+
+                            $cupOptions = [];
+                            foreach ($desiredSizes as $sizeKey) {
+                                if (isset($bySize[$sizeKey])) {
+                                    $cupOptions[] = $bySize[$sizeKey];
+                                }
+                            }
+                        }
+
+                        $hasCupSizes = $isDrink && !empty($cupOptions);
+                        $cupSizesJson = $hasCupSizes ? htmlspecialchars(json_encode($cupOptions), ENT_QUOTES, 'UTF-8') : '[]';
+
+                        $displayPrice = $baseProductPrice;
+                        if ($hasCupSizes) {
+                            $displayPrice = (float)$cupOptions[0]['price'];
+                            foreach ($cupOptions as $opt) {
+                                if (($opt['cup_size'] ?? '') === '16oz') {
+                                    $displayPrice = (float)$opt['price'];
+                                    break;
+                                }
+                            }
+                        }
+                    ?>
                         <div class="product-card"
-                             data-id="<?php echo $product['product_id']; ?>"
+                             data-id="<?php echo $productId; ?>"
                              data-code="<?php echo htmlspecialchars($product['product_code']); ?>"
                              data-name="<?php echo htmlspecialchars($product['product_name']); ?>"
-                             data-price="<?php echo $product['selling_price']; ?>"
+                             data-price="<?php echo (float)$displayPrice; ?>"
                              data-stock="<?php echo $product['stock_quantity']; ?>"
                              data-category="<?php echo $product['category_id']; ?>"
-                             onclick="addToCart(this)">
+                             data-is-drink="<?php echo $isDrink ? 'true' : 'false'; ?>"
+                             data-cup-sizes='<?php echo $cupSizesJson; ?>'
+                             onclick="handleProductClick(this, event)">
                              
                             <h4><?php echo htmlspecialchars($product['product_name']); ?></h4>
-                            <div class="price">₱<?php echo number_format($product['selling_price'], 2); ?></div>
+
+                            <?php if ($hasCupSizes): ?>
+                                <div class="cup-size-buttons">
+                                    <?php foreach ($cupOptions as $cupSize): ?>
+                                        <button type="button" class="cup-btn"
+                                                data-cup-id="<?php echo $cupSize['cup_id']; ?>"
+                                                data-cup-size="<?php echo $cupSize['cup_size']; ?>"
+                                                data-price="<?php echo $cupSize['price']; ?>"
+                                                onclick="selectCupSize(this, event)">
+                                            <?php echo $cupSize['cup_size']; ?>
+                                        </button>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="price" data-base-price="<?php echo (float)$displayPrice; ?>">₱<?php echo number_format((float)$displayPrice, 2); ?></div>
+                            <?php else: ?>
+                                <div class="price">₱<?php echo number_format((float)$displayPrice, 2); ?></div>
+                            <?php endif; ?>
+                            
                             <div class="stock">Stock: <?php echo $product['stock_quantity']; ?></div>
                         </div>
                     <?php endwhile; ?>
@@ -770,10 +899,17 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
                     </div>
                 </div>
                 
-                <div style="margin-top: 16px; display: flex; gap: 8px;">
-                    <button class="btn btn-danger" onclick="clearCart()" style="flex:1;">Clear</button>
-                    <button class="btn-void" onclick="openSaleVoidModal()" style="flex:1; padding: 12px 16px; font-size: 13px;">Void Sale</button>
-                    <button class="btn btn-success" onclick="openCheckout()" style="flex:2;">Complete Sale</button>
+                <!-- Cart Action Buttons -->
+                <div class="cart-actions">
+                    <button type="button" id="returnCartBtn" style="background: #dc3545; color: white;">
+                        🗑️ RETURN CART
+                    </button>
+                    <a href="sales.php" style="display: block; text-align: center; background: #6c757d; color: white; padding: 12px 16px; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 13px; text-transform: uppercase; border: none; cursor: pointer; letter-spacing: 0.5px;">
+                        ⚠️ VOID SALE
+                    </a>
+                    <button type="button" id="completeSaleBtn" style="background: #28a745; color: white;">
+                        ✓ COMPLETE SALE
+                    </button>
                 </div>
             </div>
         </div>
@@ -862,67 +998,35 @@ $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC"
     </div>
 </div>
 
-<!-- ITEM VOID AUTHORIZATION MODAL -->
-<div id="voidModal" class="modal">
-    <div class="modal-content" style="max-width: 450px;">
-        <div class="modal-header">
-            <h2>Void Item Authorization</h2>
-            <button class="modal-close" onclick="document.getElementById('voidModal').classList.remove('active'); document.getElementById('voidForm').reset();">&times;</button>
-        </div>
-        
-        <div class="modal-body">
-            <div style="margin-bottom: 16px;">
-                <p style="color: #666; font-size: 13px; margin: 0 0 16px 0;">
-                    This item requires admin authorization to void.
-                </p>
-                
-                <div style="margin-bottom: 16px;">
-                    <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
-                        Item to Void
-                    </label>
-                    <div id="voidItemName" style="padding: 8px 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; font-weight: 500; color: #495057;"></div>
-                </div>
-                
-                <form id="voidForm" method="POST" action="">
-                    <input type="hidden" id="voidSaleItemId" name="sale_item_id">
-                    <input type="hidden" name="void_item" value="1">
-                    
-                    <div class="form-group">
-                        <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
-                            Admin Password
-                        </label>
-                        <input type="password" class="form-control" id="adminPassword" name="admin_password"
-                               placeholder="Enter admin password" required>
-                    </div>
 
-                    <div class="form-group">
-                        <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
-                            Void Reason <span style="color: #d32f2f;">*</span>
-                        </label>
-                        <textarea class="form-control" id="voidReason" name="void_reason"
-                                  placeholder="Enter reason for voiding this item..." 
-                                  rows="4" required 
-                                  style="resize: vertical; font-family: inherit;"></textarea>
-                        <div style="font-size: 11px; color: #999; margin-top: 4px;">
-                            <span id="charCount">0</span>/500 characters
-                        </div>
-                    </div>
+<!-- Security: CSRF Token for AJAX requests -->
+<script>
+    window.POS_CONFIG = {
+        csrfToken: '<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>',
+        userRole: '<?php echo htmlspecialchars($user['role'], ENT_QUOTES, 'UTF-8'); ?>',
+        userId: '<?php echo $user['user_id']; ?>'
+    };
+</script>
+<script src="js/pos.js?v=<?php $v = @filemtime(__DIR__ . '/js/pos.js'); echo urlencode((string)($v ?: time())); ?>"></script>
 
-                    <div style="display: flex; gap: 8px; margin-top: 20px;">
-                        <button type="button" class="btn btn-secondary" 
-                                onclick="closeVoidModal()" style="flex: 1;">
-                            Cancel
-                        </button>
-                        <button type="submit" class="btn btn-danger" style="flex: 1;">
-                            Confirm Void
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script src="js/pos.js"></script>
+<!-- Button Event Listeners -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('POS Page loaded successfully');
+    
+    // Item Void Reason character counter
+    const itemVoidReason = document.getElementById('itemVoidReason');
+    if (itemVoidReason) {
+        itemVoidReason.addEventListener('input', function() {
+            const cnt = this.value.length;
+            document.getElementById('itemVoidCharCount').textContent = cnt;
+            if (cnt > 500) {
+                this.value = this.value.substring(0, 500);
+                document.getElementById('itemVoidCharCount').textContent = '500';
+            }
+        });
+    }
+});
+</script>
 </body>
 </html>

@@ -1,16 +1,26 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
 
+setSecurityHeaders();
 requireLogin();
+checkPageAccess();
+requirePermission('manage_inventory');
+
 $user = getCurrentUser();
+
+// Validate CSRF for POST operations
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    validateCSRFRequest();
+}
 
 // Handle stock adjustment
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adjust_stock'])) {
-    $product_id = $_POST['product_id'];
-    $movement_type = $_POST['movement_type'];
-    $quantity = $_POST['quantity'];
-    $notes = $_POST['notes'];
+    $product_id = sanitizeInt($_POST['product_id']);
+    $movement_type = sanitize($_POST['movement_type']);
+    $quantity = sanitizeInt($_POST['quantity']);
+    $notes = sanitize($_POST['notes']);
     
     if ($movement_type === 'in') {
         $conn->query("UPDATE products SET stock_quantity = stock_quantity + $quantity WHERE product_id = $product_id");
@@ -67,7 +77,7 @@ $movements = $conn->query("
     FROM stock_movements sm 
     LEFT JOIN products p ON sm.product_id = p.product_id 
     LEFT JOIN users u ON sm.user_id = u.user_id 
-    ORDER BY sm.movement_date DESC 
+    ORDER BY sm.created_at DESC 
     LIMIT $movements_limit OFFSET $movements_offset
 ");
 ?>
@@ -197,8 +207,8 @@ $movements = $conn->query("
                                             <td><?php echo htmlspecialchars($product['category_name']); ?></td>
                                             <td><strong><?php echo $product['stock_quantity']; ?></strong></td>
                                             <td><?php echo $product['reorder_level']; ?></td>
-                                            <td>₱<?php echo number_format($product['cost_price'], 2); ?></td>
-                                            <td>₱<?php echo number_format($product['selling_price'], 2); ?></td>
+                                            <td>₱<?php echo number_format($product['cost_price'] ?? $product['cost'] ?? 0, 2); ?></td>
+                                            <td>₱<?php echo number_format($product['selling_price'] ?? $product['price'] ?? 0, 2); ?></td>
                                             <td>
                                                 <?php if ($product['stock_quantity'] == 0): ?>
                                                     <span class="badge badge-danger">Out of Stock</span>
@@ -287,7 +297,6 @@ $movements = $conn->query("
                                     <th>Product</th>
                                     <th>Type</th>
                                     <th>Quantity</th>
-                                    <th>Reference</th>
                                     <th>Notes</th>
                                     <th>User</th>
                                     <th>Date</th>
@@ -299,22 +308,21 @@ $movements = $conn->query("
                                         <tr>
                                             <td><?php echo htmlspecialchars($movement['product_name']); ?></td>
                                             <td>
-                                                <?php if ($movement['movement_type'] === 'in'): ?>
-                                                    <span class="badge badge-success">Stock In</span>
-                                                <?php else: ?>
-                                                    <span class="badge badge-danger">Stock Out</span>
-                                                <?php endif; ?>
+                                                <?php 
+                                                $type = $movement['movement_type'];
+                                                $badge_class = in_array($type, ['restock', 'void_restore', 'initial']) ? 'badge-success' : 'badge-danger';
+                                                echo "<span class=\"badge $badge_class\">" . ucfirst($type) . "</span>";
+                                                ?>
                                             </td>
                                             <td><strong><?php echo $movement['quantity']; ?></strong></td>
-                                            <td><?php echo htmlspecialchars($movement['reference'] ?? '-'); ?></td>
                                             <td><?php echo htmlspecialchars($movement['notes'] ?? '-'); ?></td>
-                                            <td><?php echo htmlspecialchars($movement['full_name']); ?></td>
-                                            <td><?php echo date('M d, Y H:i', strtotime($movement['movement_date'])); ?></td>
+                                            <td><?php echo htmlspecialchars($movement['full_name'] ?? '-'); ?></td>
+                                            <td><?php echo date('M d, Y H:i', strtotime($movement['created_at'])); ?></td>
                                         </tr>
                                     <?php endwhile; ?>
                                 <?php else: ?>
                                     <tr>
-                                        <td colspan="7" style="text-align: center; padding: 24px; color: var(--text-secondary);">
+                                        <td colspan="6" style="text-align: center; padding: 24px; color: var(--text-secondary);">
                                             No stock movements found.
                                         </td>
                                     </tr>
@@ -384,6 +392,7 @@ $movements = $conn->query("
             </div>
             <div class="modal-body">
                 <form method="POST" action="">
+                    <?php echo csrfField(); ?>
                     <input type="hidden" name="adjust_stock" value="1">
                     <input type="hidden" name="product_id" id="modalProductId">
                     

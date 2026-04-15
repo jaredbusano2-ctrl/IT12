@@ -1,35 +1,54 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
 
+setSecurityHeaders();
 requireLogin();
+checkPageAccess();
+
 $user = getCurrentUser();
+
+// Get CSRF token for AJAX requests
+$csrfToken = getCSRFTokenForAjax();
 
 // Get sales with pagination
 $page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
 $limit = 5;
 $offset = ($page - 1) * $limit;
 
-// Build filter query
-$filter_query = "";
+// Build filter query (date)
 $filter_params = "";
-if (isset($_GET['date']) && !empty($_GET['date'])) {
-    $date = $conn->real_escape_string($_GET['date']);
-    $filter_query = "WHERE DATE(s.sale_date) = '$date'";
+$date = null;
+if (isset($_GET['date']) && $_GET['date'] !== '') {
+    $date = $_GET['date'];
     $filter_params = "&date=" . urlencode($_GET['date']);
 }
 
-$total_sales = $conn->query("SELECT COUNT(*) as count FROM sales s $filter_query")->fetch_assoc()['count'];
+if ($date) {
+    if (($user['role'] ?? null) === 'cashier') {
+        $countStmt = $conn->prepare("SELECT COUNT(*) as count FROM sales s WHERE s.user_id = ? AND DATE(s.sale_date) = ?");
+        $cashierId = (int)($user['user_id'] ?? 0);
+        $countStmt->bind_param('is', $cashierId, $date);
+    } else {
+        $countStmt = $conn->prepare("SELECT COUNT(*) as count FROM sales s WHERE DATE(s.sale_date) = ?");
+        $countStmt->bind_param('s', $date);
+    }
+    $countStmt->execute();
+    $total_sales = (int)($countStmt->get_result()->fetch_assoc()['count'] ?? 0);
+} else {
+    if (($user['role'] ?? null) === 'cashier') {
+        $cashierId = (int)($user['user_id'] ?? 0);
+        $countStmt = $conn->prepare("SELECT COUNT(*) as count FROM sales s WHERE s.user_id = ?");
+        $countStmt->bind_param('i', $cashierId);
+        $countStmt->execute();
+        $total_sales = (int)($countStmt->get_result()->fetch_assoc()['count'] ?? 0);
+    } else {
+        $total_sales = (int)($conn->query("SELECT COUNT(*) as count FROM sales s")->fetch_assoc()['count'] ?? 0);
+    }
+}
 $total_pages = ceil($total_sales / $limit);
-
-$sales = $conn->query("
-    SELECT s.*, u.full_name 
-    FROM sales s 
-    LEFT JOIN users u ON s.user_id = u.user_id 
-    $filter_query
-    ORDER BY s.sale_date DESC 
-    LIMIT $limit OFFSET $offset
-");
+$isCashierView = (($user['role'] ?? null) === 'cashier');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -39,6 +58,16 @@ $sales = $conn->query("
     <title>Sales History - POS & Inventory System</title>
     <link rel="stylesheet" href="css/style.css">
     <style>
+        /* Cashier Sales History: center content when sidebar is hidden */
+        body.cashier-view .main-content {
+            margin-left: 0;
+        }
+
+        body.cashier-view .cashier-center {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
         .pagination-container {
             margin-top: 24px;
             display: flex;
@@ -95,13 +124,19 @@ $sales = $conn->query("
         }
     </style>
 </head>
-<body>
+<body class="<?php echo $isCashierView ? 'cashier-view' : ''; ?>">
     <div class="main-wrapper">
         <?php include 'includes/sidebar.php'; ?>
         
         <div class="main-content">
+            <?php if ($isCashierView): ?><div class="cashier-center"><?php endif; ?>
             <div class="header">
-                <h1>Sales History</h1>
+                <div class="header-left">
+                    <?php if ($isCashierView): ?>
+                        <a href="pos.php" class="btn btn-return">← Return to POS</a>
+                    <?php endif; ?>
+                    <h1>Sales History</h1>
+                </div>
                 <div class="header-actions">
                     <div class="user-info">
                         <div class="user-avatar"><?php echo strtoupper(substr($user['full_name'], 0, 1)); ?></div>
@@ -140,39 +175,16 @@ $sales = $conn->query("
                                     <th>Total</th>
                                     <th>Payment</th>
                                     <th>Date</th>
+                                    <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
-                            <tbody>
-                                <?php if ($sales->num_rows > 0): ?>
-                                    <?php while ($sale = $sales->fetch_assoc()): ?>
-                                        <?php
-                                        $items_count = $conn->query("SELECT COUNT(*) as count FROM sale_items WHERE sale_id = {$sale['sale_id']}")->fetch_assoc()['count'];
-                                        ?>
-                                        <tr>
-                                            <td><strong><?php echo htmlspecialchars($sale['invoice_number']); ?></strong></td>
-                                            <td><?php echo htmlspecialchars($sale['customer_name'] ?: 'Walk-in'); ?></td>
-                                            <td><?php echo htmlspecialchars($sale['full_name']); ?></td>
-                                            <td><?php echo $items_count; ?> item(s)</td>
-                                            <td>₱<?php echo number_format($sale['subtotal'], 2); ?></td>
-                                            <td>₱<?php echo number_format($sale['tax'], 2); ?></td>
-                                            <td>₱<?php echo number_format($sale['discount'], 2); ?></td>
-                                            <td><strong>₱<?php echo number_format($sale['total_amount'], 2); ?></strong></td>
-                                            <td><span class="badge badge-primary"><?php echo ucfirst($sale['payment_method']); ?></span></td>
-                                            <td><?php echo date('M d, Y H:i', strtotime($sale['sale_date'])); ?></td>
-                                            <td>
-                                                <button class="btn btn-primary btn-sm" onclick="viewSaleDetails(<?php echo $sale['sale_id']; ?>)">View</button>
-                                                <a href="receipt.php?invoice=<?php echo $sale['invoice_number']; ?>" target="_blank" class="btn btn-success btn-sm">Receipt</a>
-                                            </td>
-                                        </tr>
-                                    <?php endwhile; ?>
-                                <?php else: ?>
-                                    <tr>
-                                        <td colspan="11" style="text-align: center; padding: 24px; color: var(--text-secondary);">
-                                            No sales records found.
-                                        </td>
-                                    </tr>
-                                <?php endif; ?>
+                            <tbody id="salesTable">
+                                <?php
+                                // Initial render uses the same renderer as AJAX
+                                $_GET['page'] = $page;
+                                include __DIR__ . '/fetch_sales.php';
+                                ?>
                             </tbody>
                         </table>
                     </div>
@@ -226,6 +238,7 @@ $sales = $conn->query("
                     <?php endif; ?>
                 </div>
             </div>
+            <?php if ($isCashierView): ?></div><?php endif; ?>
         </div>
     </div>
     
@@ -243,6 +256,37 @@ $sales = $conn->query("
     </div>
     
     <script>
+        // Store current sale data globally
+        let currentSaleData = null;
+        
+        // CSRF Token
+        const csrfToken = '<?php echo htmlspecialchars($csrfToken); ?>';
+        const isCashierUser = <?php echo (($user['role'] ?? null) === 'cashier') ? 'true' : 'false'; ?>;
+
+        function getVoidCredentials() {
+            const adminPassword = (document.getElementById('voidAdminPassword')?.value || '').trim();
+            const voidReason = (document.getElementById('voidReason')?.value || '').trim();
+            return { adminPassword, voidReason };
+        }
+
+        async function postVoidRequest(payload) {
+            const res = await fetch('api/void_item.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken
+                },
+                credentials: 'same-origin',
+                cache: 'no-store',
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data?.success) {
+                throw new Error(data?.message || data?.error || 'Void request failed');
+            }
+            return data;
+        }
+        
         async function viewSaleDetails(saleId) {
             document.getElementById('saleModal').classList.add('active');
             
@@ -253,13 +297,40 @@ $sales = $conn->query("
                 if (data.success) {
                     const sale = data.sale;
                     const items = data.items;
+                    currentSaleData = { sale, items, saleId };
+                    
+                    // Check if sale is already voided
+                    const isVoided = sale.status === 'voided';
+                    const voidedClass = isVoided ? 'opacity: 0.6;' : '';
+                    const voidedBadge = isVoided ? '<span style="background: #d32f2f; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px;">VOIDED</span>' : '';
+
+                    const voidControls = isCashierUser ? `
+                        <div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap; margin: 12px 0 4px 0;">
+                            <div style="flex: 1; min-width: 220px;">
+                                <label style="display:block; font-size:12px; margin-bottom:6px; color: var(--text-secondary);">Admin Password</label>
+                                <input id="voidAdminPassword" type="password" class="form-control" placeholder="Admin password" style="margin-bottom:0;">
+                            </div>
+                            <div style="flex: 2; min-width: 280px;">
+                                <label style="display:block; font-size:12px; margin-bottom:6px; color: var(--text-secondary);">Void Reason</label>
+                                <input id="voidReason" type="text" class="form-control" placeholder="Reason (required)" maxlength="500" style="margin-bottom:0;">
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:flex-end;">
+                                <button type="button" class="btn btn-danger btn-sm" ${isVoided ? 'disabled' : ''} onclick="voidEntireSale(${saleId})">Void Entire Sale</button>
+                            </div>
+                        </div>
+                        <p style="margin: 6px 0 0 0; font-size: 12px; color: var(--text-secondary);">
+                            Tip: Click a row’s Void button to void a specific item.
+                        </p>
+                    ` : '';
                     
                     let html = `
-                        <div style="margin-bottom: 24px;">
-                            <p><strong>Invoice:</strong> ${sale.invoice_number}</p>
+                        <div style="margin-bottom: 24px; ${voidedClass}">
+                            <p><strong>Invoice:</strong> ${sale.invoice_number} ${voidedBadge}</p>
                             <p><strong>Customer:</strong> ${sale.customer_name || 'Walk-in'}</p>
-                            <p><strong>Cashier:</strong> ${sale.full_name}</p>
+                            <p><strong>Cashier:</strong> ${sale.full_name || sale.cashier_name || ''}</p>
                             <p><strong>Date:</strong> ${new Date(sale.sale_date).toLocaleString()}</p>
+                            <p><strong>Status:</strong> <span style="color: ${isVoided ? '#d32f2f' : '#10b981'};">${isVoided ? 'Voided' : 'Completed'}</span></p>
+                            ${voidControls}
                         </div>
                         
                         <h4 style="margin-bottom: 12px;">Items</h4>
@@ -270,18 +341,34 @@ $sales = $conn->query("
                                     <th>Qty</th>
                                     <th>Price</th>
                                     <th>Subtotal</th>
+                                    ${isCashierUser ? '<th style="width: 120px;">Actions</th>' : ''}
                                 </tr>
                             </thead>
                             <tbody>
                     `;
                     
                     items.forEach(item => {
+                        const itemVoided = item.is_voided == 1;
+                        const itemStyle = itemVoided ? 'text-decoration: line-through; opacity: 0.5;' : '';
+
+                        let actionCell = '';
+                        if (isCashierUser) {
+                            const disabled = (isVoided || itemVoided) ? 'disabled' : '';
+                            const btnLabel = itemVoided ? 'Voided' : 'Void';
+                            actionCell = `
+                                <td>
+                                    <button type="button" class="btn btn-warning btn-sm" ${disabled} onclick="voidSaleItem(${item.sale_item_id})">${btnLabel}</button>
+                                </td>
+                            `;
+                        }
+                        
                         html += `
-                            <tr>
-                                <td>${item.product_name}</td>
+                            <tr style="${itemStyle}">
+                                <td>${item.product_name}${item.cup_size ? ' (' + item.cup_size + ')' : ''}</td>
                                 <td>${item.quantity}</td>
                                 <td>₱${parseFloat(item.unit_price).toFixed(2)}</td>
                                 <td>₱${parseFloat(item.subtotal).toFixed(2)}</td>
+                                ${isCashierUser ? actionCell : ''}
                             </tr>
                         `;
                     });
@@ -316,11 +403,81 @@ $sales = $conn->query("
                 }
             } catch (error) {
                 document.getElementById('saleDetails').innerHTML = '<p>Error loading sale details</p>';
+                console.error('Error:', error);
+            }
+        }
+
+        async function voidSaleItem(saleItemId) {
+            if (!currentSaleData?.sale) return;
+            const isVoided = currentSaleData.sale.status === 'voided';
+            if (isVoided) {
+                alert('This sale is already voided.');
+                return;
+            }
+
+            const { adminPassword, voidReason } = getVoidCredentials();
+            if (!adminPassword) {
+                alert('Admin password is required.');
+                return;
+            }
+            if (!voidReason) {
+                alert('Void reason is required.');
+                return;
+            }
+
+            if (!confirm('Void this item? This will restore inventory.')) return;
+
+            try {
+                await postVoidRequest({
+                    void_type: 'item',
+                    sale_item_id: saleItemId,
+                    admin_password: adminPassword,
+                    void_reason: voidReason
+                });
+                await viewSaleDetails(currentSaleData.saleId);
+                refreshSalesTable();
+            } catch (e) {
+                alert(e.message || 'Failed to void item');
+            }
+        }
+
+        async function voidEntireSale(saleId) {
+            if (!currentSaleData?.sale) return;
+            const isVoided = currentSaleData.sale.status === 'voided';
+            if (isVoided) {
+                alert('This sale is already voided.');
+                return;
+            }
+
+            const { adminPassword, voidReason } = getVoidCredentials();
+            if (!adminPassword) {
+                alert('Admin password is required.');
+                return;
+            }
+            if (!voidReason) {
+                alert('Void reason is required.');
+                return;
+            }
+
+            if (!confirm('Void the entire sale? This will void all items and restore inventory.')) return;
+
+            try {
+                await postVoidRequest({
+                    void_type: 'sale',
+                    sale_id: saleId,
+                    admin_password: adminPassword,
+                    void_reason: voidReason
+                });
+                await viewSaleDetails(saleId);
+                refreshSalesTable();
+            } catch (e) {
+                alert(e.message || 'Failed to void sale');
             }
         }
         
         function closeSaleModal() {
             document.getElementById('saleModal').classList.remove('active');
+            currentSaleData = null;
         }
         
         function filterByDate() {
@@ -329,10 +486,32 @@ $sales = $conn->query("
                 window.location.href = '?date=' + date + '&page=1';
             }
         }
+
+        // Real-time sales history refresh (AJAX)
+        async function refreshSalesTable() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                if (!params.get('page')) params.set('page', '1');
+                const url = 'fetch_sales.php?' + params.toString();
+                const res = await fetch(url, { cache: 'no-store' });
+                if (!res.ok) return;
+                const html = await res.text();
+                const tbody = document.getElementById('salesTable');
+                if (tbody) tbody.innerHTML = html;
+            } catch (e) {
+                // Silent fail to avoid disrupting cashier workflow
+                console.error('Sales refresh failed', e);
+            }
+        }
+
+        // Auto-refresh every 7 seconds (within requested 5–10s)
+        setInterval(refreshSalesTable, 7000);
         
         window.addEventListener('click', function(e) {
             if (e.target.classList.contains('modal')) {
-                closeSaleModal();
+                if (e.target.id === 'saleModal') {
+                    closeSaleModal();
+                }
             }
         });
     </script>

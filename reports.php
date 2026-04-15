@@ -1,15 +1,14 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
 
+setSecurityHeaders();
 requireLogin();
-$user = getCurrentUser();
+checkPageAccess();
+requirePermission('view_reports');
 
-// Check if user is admin for reports access
-if (!isAdmin()) {
-    header('Location: index.php');
-    exit();
-}
+$user = getCurrentUser();
 
 // Get date range (default to today)
 $start_date = $_GET['start_date'] ?? date('Y-m-d');
@@ -193,7 +192,7 @@ while ($row = $result->fetch_assoc()) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Daily Reports - POPRIE</title>
+    <title> Reports - POPRIE</title>
     <link rel="stylesheet" href="css/style.css">
     <style>
         .pagination-container {
@@ -258,7 +257,7 @@ while ($row = $result->fetch_assoc()) {
         
         <div class="main-content">
             <div class="header">
-                <h1>Daily Reports</h1>
+                <h1>Reports</h1>
                 <div class="header-actions">
                     <div class="user-info">
                         <div class="user-avatar"><?php echo strtoupper(substr($user['full_name'], 0, 1)); ?></div>

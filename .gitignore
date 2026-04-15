@@ -1,0 +1,43 @@
+# POPRIE POS .gitignore
+# Security-critical files that should NEVER be committed
+
+# Environment files (contain database credentials)
+.env
+.env.local
+.env.*.local
+
+# Database backups
+/backups/
+*.sql.bak
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/logs/
+
+# Temporary files
+/tmp/
+*.tmp
+
+# PHP dependencies (if using Composer)
+/vendor/
+
+# Node dependencies (if using npm)
+/node_modules/
+
+# Compiled assets
+*.min.js
+*.min.css
+
+# User uploads (if sensitive)
+# /uploads/

@@ -1,90 +1,51 @@
 // Cart data
 let cart = [];
-let selectedCupSize = {};
+let selectedCupSize = {}; // legacy placeholder (no longer used)
 
-// Test if JavaScript is loading
+// POS JavaScript loaded
 console.log('POS JavaScript loaded successfully!');
-alert('JavaScript is working!');
 
-// Select cup size for drink
-function selectCupSize(button, event) {
-    event.stopPropagation();
-    
-    const productCard = button.closest('.product-card');
-    const productId = productCard.dataset.id;
-    const cupSize = button.dataset.cupSize;
-    
-    // Clear previous selection for this product
-    const cupButtons = productCard.querySelectorAll('.cup-btn');
-    cupButtons.forEach(btn => btn.classList.remove('selected'));
-    
-    // Select current button
-    button.classList.add('selected');
-    
-    // Store selected cup size
-    selectedCupSize[productId] = cupSize;
-    
-    console.log('Selected cup size:', productId, cupSize);
-    
-    // Automatically add to cart after cup size selection
-    setTimeout(() => {
-        addToCart(productCard);
-    }, 100);
+// Security: Get CSRF token from config
+function getCSRFToken() {
+    return window.POS_CONFIG?.csrfToken || '';
 }
 
-// Handle product card click
-function handleProductClick(element, event) {
-    console.log('Product clicked:', element.dataset);
-    const isDrink = element.dataset.isDrink === 'true';
-    console.log('Is drink:', isDrink);
+// Helper function to make secure fetch requests
+async function secureFetch(url, options = {}) {
+    const csrfToken = getCSRFToken();
     
-    if (isDrink) {
-        // For all drinks (including Hot Coffee), require cup size selection
-        const productId = element.dataset.id;
-        console.log('Product ID:', productId);
-        console.log('Selected cup sizes:', selectedCupSize);
-        
-        if (!selectedCupSize[productId]) {
-            alert('Please select a cup size (12oz or 16oz) for this drink!');
-            return;
-        }
-        // If cup size is selected, add to cart
-        addToCart(element);
-    } else {
-        // For non-drinks, add directly to cart
-        addToCart(element);
-    }
+    // Add CSRF token to headers
+    options.headers = {
+        ...options.headers,
+        'X-CSRF-TOKEN': csrfToken
+    };
+    
+    return fetch(url, options);
 }
 
 // Add product to cart
-function addToCart(element) {
+function addToCart(element, options = {}) {
     console.log('Adding product:', element.dataset); // Debug log
     
     const productId = element.dataset.id;
     const productCode = element.dataset.code;
     const productName = element.dataset.name;
-    const productPrice = parseFloat(element.dataset.price);
+    const productPrice = parseFloat(options.price ?? element.dataset.price);
     const productStock = parseInt(element.dataset.stock);
-    const isDrink = element.dataset.isDrink === 'true';
-    
-    console.log('Product details:', { productId, productCode, productName, productPrice, productStock, isDrink }); // Debug log
-    
-    // Check if it's a drink and cup size is selected
-    if (isDrink && !selectedCupSize[productId]) {
-        alert('Please select a cup size (12oz or 16oz) for this drink!');
-        return;
-    }
+
+    const cupSize = options.cupSize ?? element.dataset.selectedCupSize ?? 'none';
+    const cupIdRaw = options.cupId ?? element.dataset.selectedCupId ?? null;
+    const cupId = cupIdRaw !== null && cupIdRaw !== undefined && cupIdRaw !== '' ? parseInt(cupIdRaw) : null;
+
+    console.log('Product details:', { productId, productCode, productName, productPrice, productStock }); // Debug log
     
     if (productStock <= 0) {
         alert('Product is out of stock!');
         return;
     }
     
-    // Get cup size for drinks
-    const cupSize = isDrink ? selectedCupSize[productId] : 'none';
-    
     // Create unique key for cart items (product + cup size)
-    const cartKey = isDrink ? `${productId}_${cupSize}` : productId;
+    const cartKey = `${productId}:${cupId || 'none'}`;
     
     // Check if product already in cart
     const existingItem = cart.find(item => item.cartKey === cartKey);
@@ -111,7 +72,7 @@ function addToCart(element) {
             stock: productStock,
             subtotal: productPrice,
             cupSize: cupSize,
-            isDrink: isDrink
+            cupId: cupId
         };
         console.log('New item created:', newItem); // Debug log
         cart.push(newItem);
@@ -121,6 +82,86 @@ function addToCart(element) {
     updateCart();
 }
 
+// ============================================
+// CUP SIZE SELECTION + PRODUCT CLICK HANDLERS
+// ============================================
+
+function parseCupSizesFromCard(card) {
+    try {
+        const raw = card?.dataset?.cupSizes;
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        console.warn('Failed to parse cup sizes:', e);
+        return [];
+    }
+}
+
+function applyCupSelection(card, cup) {
+    if (!card || !cup) return;
+
+    card.dataset.selectedCupId = String(cup.cup_id);
+    card.dataset.selectedCupSize = String(cup.cup_size);
+    card.dataset.selectedCupPrice = String(cup.price);
+    card.dataset.price = String(cup.price);
+
+    const priceEl = card.querySelector('.price');
+    if (priceEl) {
+        priceEl.textContent = `₱${Number(cup.price).toFixed(2)}`;
+        priceEl.dataset.basePrice = String(cup.price);
+    }
+}
+
+function selectCupSize(button, event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+
+    const card = button.closest('.product-card');
+    if (!card) return;
+
+    // Update selected state styling
+    const buttons = card.querySelectorAll('.cup-btn');
+    buttons.forEach(b => b.classList.remove('selected'));
+    button.classList.add('selected');
+
+    const cup = {
+        cup_id: parseInt(button.dataset.cupId),
+        cup_size: button.dataset.cupSize,
+        price: parseFloat(button.dataset.price)
+    };
+    applyCupSelection(card, cup);
+
+    // Requirement: clicking a specific size should immediately add to cart
+    addToCart(card, {
+        cupId: cup.cup_id,
+        cupSize: cup.cup_size,
+        price: cup.price
+    });
+}
+
+function handleProductClick(card, event) {
+    if (event) {
+        // If click originated from a cup button, let it handle itself
+        if (event.target && event.target.closest && event.target.closest('.cup-btn')) {
+            return;
+        }
+    }
+
+    const isDrink = String(card.dataset.isDrink).toLowerCase() === 'true';
+    const cupSizes = parseCupSizesFromCard(card);
+
+    if (isDrink && cupSizes.length > 0) {
+        alert('Please click a cup size (12oz/16oz) to add.');
+        return;
+    }
+
+    // Non-drink or no cup sizes
+    addToCart(card, { cupId: null, cupSize: 'none' });
+}
+
 // Update cart display
 function updateCart() {
     const cartItemsDiv = document.getElementById('cartItems');
@@ -128,22 +169,26 @@ function updateCart() {
     if (cart.length === 0) {
         cartItemsDiv.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 40px 0;">Cart is empty</p>';
     } else {
-        cartItemsDiv.innerHTML = cart.map((item, index) => `
-            <div class="cart-item" data-sale-item-id="${item.id || 'temp-' + index}">
-                <div class="cart-item-details">
-                    <h4>${item.name}</h4>
-                    <p>₱${item.price.toFixed(2)} × ${item.quantity}</p>
+        cartItemsDiv.innerHTML = cart.map((item, index) => {
+            const displayName = item.cupSize && item.cupSize !== 'none' 
+                ? `${item.name} (${item.cupSize})` 
+                : item.name;
+            return `
+            <div class="cart-item" data-sale-item-id="${item.id || 'temp-' + index}" data-index="${index}">
+                <div class="cart-item-details" style="flex: 1;">
+                    <h4 style="margin: 0 0 4px 0; font-size: 13px;">${displayName}</h4>
+                    <p style="margin: 0; font-size: 12px; color: #666;">₱${item.price.toFixed(2)} × ${item.quantity}</p>
                 </div>
-                <div class="cart-item-actions">
-                    <strong style="color: var(--primary);">₱${item.subtotal.toFixed(2)}</strong>
-                    <div class="quantity-control">
-                        <button class="quantity-btn" onclick="decreaseQuantity(${index})">-</button>
-                        <span style="font-weight: 600; min-width: 30px; text-align: center;">${item.quantity}</span>
-                        <button class="quantity-btn" onclick="increaseQuantity(${index})">+</button>
+                <div class="cart-item-actions" style="display: flex; align-items: center; gap: 8px;">
+                    <strong style="color: var(--primary); min-width: 70px; text-align: right;">₱${item.subtotal.toFixed(2)}</strong>
+                    <div class="quantity-control" style="display: flex; align-items: center; gap: 4px;">
+                        <button type="button" class="quantity-btn" onclick="decreaseQuantity(${index})" style="width: 26px; height: 26px; border: none; border-radius: 4px; background: #007bff; color: white; cursor: pointer; font-weight: bold; font-size: 14px;">-</button>
+                        <span style="font-weight: 600; min-width: 24px; text-align: center; font-size: 12px;">${item.quantity}</span>
+                        <button type="button" class="quantity-btn" onclick="increaseQuantity(${index})" style="width: 26px; height: 26px; border: none; border-radius: 4px; background: #007bff; color: white; cursor: pointer; font-weight: bold; font-size: 14px;">+</button>
                     </div>
                 </div>
             </div>
-        `).join('');
+        `}).join('');
     }
     
     updateTotals();
@@ -198,13 +243,18 @@ function removeFromCart(index) {
 
 
 
-// Clear cart
-function clearCart() {
-    if (cart.length === 0) return;
+// Return cart (clear all items)
+function returnCart() {
+    if (cart.length === 0) {
+        alert('Cart is already empty!');
+        return;
+    }
     
-    if (confirm('Are you sure you want to clear the cart?')) {
+    if (confirm('Remove all items from cart? This action cannot be undone.')) {
         cart = [];
+        selectedCupSize = {};
         updateCart();
+        alert('✓ Cart cleared successfully!');
     }
 }
 
@@ -269,165 +319,63 @@ function closeCheckout() {
     document.getElementById('checkoutModal').classList.remove('active');
 }
 
-// SALE VOID MODAL HELPERS
-function openSaleVoidModal() {
-    // Test if void modal exists
-    const voidModal = document.getElementById('voidModal');
-    if (!voidModal) {
-        alert('Void modal not found!');
-        return;
-    }
-    
-    // Test if form exists
-    const voidForm = document.getElementById('voidForm');
-    if (!voidForm) {
-        alert('Void form not found!');
-        return;
-    }
-    
-    document.getElementById('adminPassword').value = '';
-    document.getElementById('voidReason').value = '';
-    document.getElementById('charCount').textContent = '0';
-    document.getElementById('voidModal').classList.add('active');
-    setTimeout(() => document.getElementById('adminPassword').focus(), 100);
-}
+// ============================================
+// CHECKOUT MODAL HELPERS
+// ============================================
 
-function closeSaleVoidModal() {
-    document.getElementById('voidModal').classList.remove('active');
-    document.getElementById('voidForm').reset();
-}
-
-// sale form char counter
-document.getElementById('voidReason')?.addEventListener('input', function() {
-    const cnt = this.value.length;
-    document.getElementById('charCount').textContent = cnt;
-    if (cnt > 500) {
-        this.value = this.value.substring(0, 500);
-        document.getElementById('charCount').textContent = '500';
-    }
-});
-
-// handle sale void submission
-document.getElementById('voidForm')?.addEventListener('submit', async function(e) {
-    e.preventDefault();
-    const adminPassword = document.getElementById('adminPassword').value;
-    const reason = document.getElementById('voidReason').value.trim();
-    if (!reason) {
-        alert('Please enter a reason for voiding the sale');
-        return;
-    }
-    const submitBtn = this.querySelector('button[type="submit"]');
-    const orig = submitBtn.textContent;
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Authorizing...';
-    try {
-        // send current cart along with request so server can audit what was cancelled
-        const response = await fetch('api/void_item.php', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                sale_item_id: 0,
-                admin_password: adminPassword,
-                void_reason: reason,
-                cart_items: cart
-            })
-        });
-        const result = await response.json();
-        submitBtn.disabled = false;
-        submitBtn.textContent = orig;
-        if (response.ok && result.success) {
-            cart.forEach(i=>i.voided=true);
-            updateCart();
-            closeSaleVoidModal();
-            alert('Sale cancelled and recorded (admin authorized)');
-        } else if (response.status===401) {
-            alert('Invalid admin password');
-        } else {
-            alert('Error: ' + (result.error||'Unable to void sale'));
-        }
-    } catch(err) {
-        submitBtn.disabled = false;
-        submitBtn.textContent = orig;
-        alert('Error contacting server');
-    }
-});
-
-// Display cart items in modal
 function displayModalCart() {
     const modalCartItems = document.getElementById('modalCartItems');
+    if (!modalCartItems) return;
+
     const activeItems = cart.filter(item => !item.voided);
-    const voidedItems = cart.filter(item => item.voided);
-    
-    if (activeItems.length === 0 && voidedItems.length === 0) {
-        modalCartItems.innerHTML = '<p style="text-align: center; color: var(--text-secondary); padding: 20px;">Cart is empty</p>';
-    } else {
-        let html = '';
-        
-        // Display active items
-        if (activeItems.length > 0) {
-            html += activeItems.map(item => `
-                <div class="cart-item">
-                    <div class="cart-item-info">
-                        <div class="cart-item-name">${item.name}</div>
-                        <div class="cart-item-price">₱${item.price.toFixed(2)}</div>
-                    </div>
-                    <div class="cart-item-actions">
-                        <span style="min-width: 30px; text-align: center; font-weight: 600;">×${item.quantity}</span>
-                        <strong style="min-width: 70px; text-align: right;">₱${item.subtotal.toFixed(2)}</strong>
-                    </div>
-                </div>
-            `).join('');
-        }
-        
-        // Display voided items (if any)
-        if (voidedItems.length > 0) {
-            html += '<div style="margin-top: 16px; padding-top: 16px; border-top: 2px solid #e8e8e8;">';
-            html += '<p style="font-size: 12px; color: #999; margin: 0 0 8px 0; text-transform: uppercase; font-weight: 600;">Voided Items</p>';
-            html += voidedItems.map(item => `
-                <div class="cart-item voided-item">
-                    <div class="cart-item-info">
-                        <div class="cart-item-name">${item.name} <span class="voided-badge">VOIDED</span></div>
-                        <div class="cart-item-price">₱${item.price.toFixed(2)}</div>
-                    </div>
-                    <div class="cart-item-actions">
-                        <span style="min-width: 30px; text-align: center; font-weight: 600;">×${item.quantity}</span>
-                        <strong style="min-width: 70px; text-align: right;">₱${item.subtotal.toFixed(2)}</strong>
-                    </div>
-                </div>
-            `).join('');
-            html += '</div>';
-        }
-        
-        modalCartItems.innerHTML = html;
+
+    if (activeItems.length === 0) {
+        modalCartItems.innerHTML = '<p style="text-align:center;color:var(--text-secondary);padding:16px 0;">No items.</p>';
+        return;
     }
+
+    modalCartItems.innerHTML = activeItems.map(item => {
+        const name = item.cupSize && item.cupSize !== 'none' ? `${item.name} (${item.cupSize})` : item.name;
+        return `
+            <div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);">
+                <div style="flex:1;">
+                    <strong style="font-size:13px;">${name}</strong><br>
+                    <span style="font-size:12px;color:var(--text-secondary);">₱${item.price.toFixed(2)} × ${item.quantity}</span>
+                </div>
+                <div style="min-width:90px;text-align:right;font-weight:700;">₱${item.subtotal.toFixed(2)}</div>
+            </div>
+        `;
+    }).join('');
 }
 
-// Update modal totals
 function updateModalTotals() {
-    const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
+    const activeItems = cart.filter(item => !item.voided);
+    const subtotal = activeItems.reduce((sum, item) => sum + (parseFloat(item.subtotal) || 0), 0);
     const tax = subtotal * 0.12;
-    const discount = parseFloat(document.getElementById('discountAmount').value || 0);
-    const total = subtotal + tax - discount;
-    
-    console.log('Modal totals calculation:', { subtotal, tax, discount, total }); // Debug log
-    
-    document.getElementById('modalSubtotal').textContent = '₱' + subtotal.toFixed(2);
-    document.getElementById('modalTax').textContent = '₱' + tax.toFixed(2);
-    document.getElementById('modalDiscount').textContent = '₱' + discount.toFixed(2);
-    document.getElementById('modalGrandTotal').textContent = '₱' + total.toFixed(2);
+    const discount = parseFloat(document.getElementById('discountAmount')?.value || 0) || 0;
+    const total = Math.max(0, subtotal + tax - discount);
+
+    const modalSubtotal = document.getElementById('modalSubtotal');
+    const modalTax = document.getElementById('modalTax');
+    const modalDiscount = document.getElementById('modalDiscount');
+    const modalGrandTotal = document.getElementById('modalGrandTotal');
+
+    if (modalSubtotal) modalSubtotal.textContent = '₱' + subtotal.toFixed(2);
+    if (modalTax) modalTax.textContent = '₱' + tax.toFixed(2);
+    if (modalDiscount) modalDiscount.textContent = '₱' + discount.toFixed(2);
+    if (modalGrandTotal) modalGrandTotal.textContent = '₱' + total.toFixed(2);
+
+    calculateModalChange();
 }
 
-// Calculate change in modal
 function calculateModalChange() {
-    const activeItems = cart.filter(item => !item.voided);
-    const subtotal = activeItems.reduce((sum, item) => sum + item.subtotal, 0);
-    const tax = subtotal * 0.12;
-    const discount = parseFloat(document.getElementById('discountAmount').value || 0);
-    const total = subtotal + tax - discount;
-    const paid = parseFloat(document.getElementById('amountPaid').value || 0);
-    const change = paid - total;
-    
-    document.getElementById('changeAmount').value = change >= 0 ? '₱' + change.toFixed(2) : '₱0.00';
+    const paid = parseFloat(document.getElementById('amountPaid')?.value || 0) || 0;
+    const grandTotalText = document.getElementById('modalGrandTotal')?.textContent || '₱0.00';
+    const total = parseFloat(grandTotalText.replace(/[₱,\s]/g, '')) || 0;
+    const change = Math.max(0, paid - total);
+
+    const changeEl = document.getElementById('changeAmount');
+    if (changeEl) changeEl.value = change.toFixed(2);
 }
 
 document.getElementById('amountPaid')?.addEventListener('input', calculateModalChange);
@@ -462,27 +410,31 @@ document.getElementById('checkoutForm')?.addEventListener('submit', async functi
         return;
     }
     
-    // Create hidden form for direct submission
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = 'process-sale.php';
-    
-    // Add all data as hidden fields
-    const fields = {
+    // Prepare sale data for API
+    const saleData = {
         customer_name: document.getElementById('customerName').value,
-        customer_phone: '',
         payment_method: document.getElementById('paymentMethod').value,
         subtotal: subtotal,
         tax: tax,
         discount: discount,
         total: total,
-        paid: paid,
+        amount_paid: paid,
         change: paid - total,
-        items: cart
+        items: activeItems.map(item => ({
+            id: item.id,
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            subtotal: item.subtotal,
+            cup_size: item.cupSize || 'none',
+            cup_id: item.cupId || null
+        }))
     };
     
+    console.log('Sale data being sent:', saleData); // Debug log
+    
     try {
-        const response = await fetch('api/process-sale.php', {
+        const response = await secureFetch('api/process-sale.php', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -495,13 +447,13 @@ document.getElementById('checkoutForm')?.addEventListener('submit', async functi
         if (result.success) {
             alert('Sale completed successfully!\nInvoice: ' + result.invoice);
             cart = [];
+            selectedCupSize = {}; // Also reset cup size selections
             updateCart();
             closeCheckout();
-            
-            // Optionally print receipt or redirect
-            if (confirm('Would you like to view the receipt?')) {
-                window.open('receipt.php?invoice=' + result.invoice, '_blank');
-            }
+
+            // After clicking OK on the alert, show receipt in the same tab
+            const receiptUrl = 'receipt.php?invoice=' + encodeURIComponent(result.invoice);
+            window.location.href = receiptUrl;
         } else {
             alert('Error: ' + result.message);
         }
@@ -544,13 +496,50 @@ document.getElementById('filterCategory')?.addEventListener('change', function()
 // Close modal on outside click
 window.addEventListener('click', function(e) {
     const checkoutModal = document.getElementById('checkoutModal');
-    const saleModal = document.getElementById('saleVoidModal');
     
     if (e.target === checkoutModal) {
         closeCheckout();
     }
-    
-    if (e.target === saleModal) {
-        closeSaleVoidModal();
-    }
 });
+
+// Make all functions globally accessible
+window.returnCart = returnCart;
+window.openCheckout = openCheckout;
+window.closeCheckout = closeCheckout;
+window.updateCart = updateCart;
+
+// ============================================
+// CART BUTTON EVENT LISTENERS
+// ============================================
+(function initCartButtons() {
+    // Wait for DOM to be ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', setupCartButtons);
+    } else {
+        setupCartButtons();
+    }
+    
+    function setupCartButtons() {
+        // Return Cart Button
+        const returnBtn = document.getElementById('returnCartBtn');
+        if (returnBtn) {
+            returnBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                returnCart();
+            });
+        }
+        
+        // Complete Sale Button
+        const completeBtn = document.getElementById('completeSaleBtn');
+        if (completeBtn) {
+            completeBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                openCheckout();
+            });
+        }
+        
+        console.log('Cart buttons initialized');
+    }
+})();

@@ -1,9 +1,12 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
 
+setSecurityHeaders();
 requireLogin();
-requireAdmin(); // Only admin can access this page
+checkPageAccess();
+requirePermission('manage_users'); // Only admin can access this page
 $user = getCurrentUser();
 
 // Handle user actions

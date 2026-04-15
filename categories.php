@@ -1,10 +1,31 @@
 <?php
 require_once 'includes/config.php';
 require_once 'includes/auth.php';
+require_once 'includes/security.php';
 
+setSecurityHeaders();
 requireLogin();
-requireCategoriesAccess(); // Only admin can access categories
+checkPageAccess();
+requirePermission('manage_categories');
+
 $user = getCurrentUser();
+
+// Resolve return page (used to preserve pagination after POST)
+$returnPage = 1;
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $returnPage = isset($_POST['return_page']) ? max(1, (int)$_POST['return_page']) : 1;
+} else {
+    $returnPage = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+}
+
+// Validate CSRF for POST operations
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    validateCSRFRequest();
+}
+
+// Generate one CSRF token for this page and reuse it for all POSTs
+// NOTE: This MUST run after validateCSRFRequest() for POST requests.
+$csrfToken = generateCSRFToken();
 
 // Handle category operations
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -12,13 +33,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $conn->prepare("INSERT INTO categories (category_name, description) VALUES (?, ?)");
         $stmt->bind_param("ss", $_POST['category_name'], $_POST['description']);
         $stmt->execute();
-        header('Location: categories.php?success=added');
+        logActivity('category_added', "Added category: " . sanitize($_POST['category_name']));
+        header('Location: categories.php?page=' . $returnPage . '&success=added');
         exit();
     } elseif (isset($_POST['edit_category'])) {
+        $category_id = intval($_POST['category_id'] ?? 0);
+        if ($category_id < 1) {
+            header('Location: categories.php?page=' . $returnPage . '&error=invalid_category');
+            exit();
+        }
         $stmt = $conn->prepare("UPDATE categories SET category_name=?, description=? WHERE category_id=?");
-        $stmt->bind_param("ssi", $_POST['category_name'], $_POST['description'], $_POST['category_id']);
-        $stmt->execute();
-        header('Location: categories.php?success=updated');
+        $stmt->bind_param("ssi", $_POST['category_name'], $_POST['description'], $category_id);
+
+        if (!$stmt->execute()) {
+            error_log('Edit category failed (ID ' . $category_id . '): ' . $stmt->error);
+            header('Location: categories.php?page=' . $returnPage . '&error=update_failed');
+            exit();
+        }
+
+        if ($stmt->affected_rows < 1) {
+            // Could be not found OR values unchanged; treat as not_updated for feedback
+            header('Location: categories.php?page=' . $returnPage . '&error=not_updated');
+            exit();
+        }
+
+        header('Location: categories.php?page=' . $returnPage . '&success=updated');
         exit();
     } elseif (isset($_POST['delete_category'])) {
         $category_id = intval($_POST['category_id']);
@@ -28,16 +67,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         if ($product_check['count'] > 0) {
             // Cannot delete category with products
-            header('Location: categories.php?error=has_products');
+            header('Location: categories.php?page=' . $returnPage . '&error=has_products');
             exit();
         }
         
         // Hard delete category
         $stmt = $conn->prepare("DELETE FROM categories WHERE category_id = ?");
         $stmt->bind_param("i", $category_id);
-        $stmt->execute();
-        
-        header('Location: categories.php?success=deleted');
+
+        if (!$stmt->execute()) {
+            error_log('Delete category failed (ID ' . $category_id . '): ' . $stmt->error);
+            header('Location: categories.php?page=' . $returnPage . '&error=delete_failed');
+            exit();
+        }
+
+        if ($stmt->affected_rows < 1) {
+            header('Location: categories.php?page=' . $returnPage . '&error=not_found');
+            exit();
+        }
+
+        header('Location: categories.php?page=' . $returnPage . '&success=deleted');
         exit();
     }
 }
@@ -63,6 +112,26 @@ $categories = $conn->query("
     ORDER BY c.category_name ASC
     LIMIT $limit OFFSET $offset
 ");
+
+// Optional: server-side modal state (works even if JS fails)
+$modalMode = null; // 'add' | 'edit' | null
+$editCategory = null;
+if (isset($_GET['add'])) {
+    $modalMode = 'add';
+}
+if (isset($_GET['edit'])) {
+    $modalMode = 'edit';
+    $editId = max(1, (int)$_GET['edit']);
+    $editStmt = $conn->prepare('SELECT category_id, category_name, description FROM categories WHERE category_id = ?');
+    $editStmt->bind_param('i', $editId);
+    $editStmt->execute();
+    $editCategory = $editStmt->get_result()->fetch_assoc();
+    $editStmt->close();
+    if (!$editCategory) {
+        // If invalid id, just fall back to normal view
+        $modalMode = null;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -136,7 +205,7 @@ $categories = $conn->query("
             <div class="header">
                 <h1>Categories</h1>
                 <div class="header-actions">
-                    <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add Category</button>
+                    <a class="btn btn-primary btn-sm" href="categories.php?page=<?php echo $page; ?>&add=1">+ Add Category</a>
                     <div class="user-info">
                         <div class="user-avatar"><?php echo strtoupper(substr($user['full_name'], 0, 1)); ?></div>
                         <div class="user-details">
@@ -153,12 +222,29 @@ $categories = $conn->query("
                     Category <?php echo htmlspecialchars($_GET['success']); ?> successfully!
                 </div>
             <?php endif; ?>
+
+            <?php if (!empty($_SESSION['flash_message'])): ?>
+                <div class="alert <?php echo ($_SESSION['flash_type'] ?? '') === 'error' ? 'alert-danger' : 'alert-success'; ?>" style="margin-bottom: 24px;">
+                    <?php echo htmlspecialchars((string)$_SESSION['flash_message']); ?>
+                </div>
+                <?php unset($_SESSION['flash_message'], $_SESSION['flash_type']); ?>
+            <?php endif; ?>
             
             <?php if (isset($_GET['error'])): ?>
                 <div class="alert alert-danger" style="margin-bottom: 24px; background: #fee2e2; color: #7f1d1d; border: 1px solid #fca5a5;">
                     <?php 
                     if ($_GET['error'] === 'has_products') {
                         echo "Cannot delete category because it has associated products.";
+                    } elseif ($_GET['error'] === 'invalid_category') {
+                        echo "Invalid category selected.";
+                    } elseif ($_GET['error'] === 'not_updated') {
+                        echo "No changes were saved (category not found or values unchanged).";
+                    } elseif ($_GET['error'] === 'update_failed') {
+                        echo "Failed to update category. Please try again.";
+                    } elseif ($_GET['error'] === 'delete_failed') {
+                        echo "Failed to delete category. It may be referenced by other records.";
+                    } elseif ($_GET['error'] === 'not_found') {
+                        echo "Category not found.";
                     } else {
                         echo "An error occurred: " . htmlspecialchars($_GET['error']);
                     }
@@ -190,8 +276,13 @@ $categories = $conn->query("
                                         <td><span class="badge badge-primary"><?php echo $category['product_count']; ?> products</span></td>
                                         <td><?php echo date('M d, Y', strtotime($category['created_at'])); ?></td>
                                         <td>
-                                            <button class="btn btn-warning btn-sm" onclick='openEditModal(<?php echo json_encode($category); ?>)'>Edit</button>
-                                            <button class="btn btn-danger btn-sm" onclick="deleteCategory(<?php echo $category['category_id']; ?>, <?php echo $category['product_count']; ?>)">Delete</button>
+                                            <a class="btn btn-warning btn-sm" href="categories.php?page=<?php echo $page; ?>&edit=<?php echo (int)$category['category_id']; ?>">Edit</a>
+                                            <form method="POST" action="categories.php?page=<?php echo $page; ?>" style="display:inline;">
+                                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
+                                                <input type="hidden" name="return_page" value="<?php echo (int)$page; ?>">
+                                                <input type="hidden" name="category_id" value="<?php echo (int)$category['category_id']; ?>">
+                                                <button type="submit" class="btn btn-danger btn-sm" name="delete_category" value="1" <?php echo ((int)$category['product_count'] > 0) ? 'disabled' : ''; ?>>Delete</button>
+                                            </form>
                                         </td>
                                     </tr>
                                 <?php endwhile; ?>
@@ -252,78 +343,36 @@ $categories = $conn->query("
     </div>
     
     <!-- Add/Edit Category Modal -->
-    <div id="categoryModal" class="modal">
+    <div id="categoryModal" class="modal <?php echo $modalMode ? 'active' : ''; ?>">
         <div class="modal-content">
             <div class="modal-header">
-                <h2 id="modalTitle">Add Category</h2>
-                <button class="modal-close" onclick="closeCategoryModal()">&times;</button>
+                <h2 id="modalTitle"><?php echo $modalMode === 'edit' ? 'Edit Category' : 'Add Category'; ?></h2>
+                <a class="modal-close" href="categories.php?page=<?php echo $page; ?>" style="text-decoration:none;">&times;</a>
             </div>
             <div class="modal-body">
-                <form method="POST" action="" id="categoryForm">
-                    <input type="hidden" name="category_id" id="categoryId">
+                <form method="POST" action="categories.php?page=<?php echo (int)$page; ?>" id="categoryForm">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>">
+                    <input type="hidden" name="return_page" value="<?php echo (int)$page; ?>">
+                    <input type="hidden" name="category_id" id="categoryId" value="<?php echo (int)($editCategory['category_id'] ?? 0); ?>">
                     
                     <div class="form-group">
                         <label>Category Name *</label>
-                        <input type="text" class="form-control" name="category_name" id="categoryName" required>
+                        <input type="text" class="form-control" name="category_name" id="categoryName" required value="<?php echo htmlspecialchars($editCategory['category_name'] ?? '', ENT_QUOTES, 'UTF-8'); ?>">
                     </div>
                     
                     <div class="form-group">
                         <label>Description</label>
-                        <textarea class="form-control" name="description" id="description" rows="3"></textarea>
+                        <textarea class="form-control" name="description" id="description" rows="3"><?php echo htmlspecialchars($editCategory['description'] ?? '', ENT_QUOTES, 'UTF-8'); ?></textarea>
                     </div>
                     
-                    <button type="submit" name="add_category" id="submitBtn" class="btn btn-primary" style="width: 100%;">Add Category</button>
+                    <button type="submit" name="<?php echo $modalMode === 'edit' ? 'edit_category' : 'add_category'; ?>" id="submitBtn" class="btn btn-primary" style="width: 100%;">
+                        <?php echo $modalMode === 'edit' ? 'Update Category' : 'Add Category'; ?>
+                    </button>
                 </form>
             </div>
         </div>
     </div>
     
-    <script>
-        function openAddModal() {
-            document.getElementById('modalTitle').textContent = 'Add Category';
-            document.getElementById('categoryForm').reset();
-            document.getElementById('submitBtn').name = 'add_category';
-            document.getElementById('submitBtn').textContent = 'Add Category';
-            document.getElementById('categoryModal').classList.add('active');
-        }
-        
-        function openEditModal(category) {
-            document.getElementById('modalTitle').textContent = 'Edit Category';
-            document.getElementById('categoryId').value = category.category_id;
-            document.getElementById('categoryName').value = category.category_name;
-            document.getElementById('description').value = category.description || '';
-            document.getElementById('submitBtn').name = 'edit_category';
-            document.getElementById('submitBtn').textContent = 'Update Category';
-            document.getElementById('categoryModal').classList.add('active');
-        }
-        
-        function closeCategoryModal() {
-            document.getElementById('categoryModal').classList.remove('active');
-        }
-        
-        function deleteCategory(id, productCount) {
-            if (productCount > 0) {
-                alert('Cannot delete category because it has ' + productCount + ' associated product(s).');
-                return;
-            }
-            
-            if (confirm('Are you sure you want to delete this category?')) {
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.innerHTML = `
-                    <input type="hidden" name="delete_category" value="1">
-                    <input type="hidden" name="category_id" value="${id}">
-                `;
-                document.body.appendChild(form);
-                form.submit();
-            }
-        }
-        
-        window.addEventListener('click', function(e) {
-            if (e.target.classList.contains('modal')) {
-                closeCategoryModal();
-            }
-        });
-    </script>
+    <script></script>
 </body>
 </html>

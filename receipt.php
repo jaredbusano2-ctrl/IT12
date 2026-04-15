@@ -25,11 +25,16 @@ if ($sale_result->num_rows === 0) {
 $sale = $sale_result->fetch_assoc();
 
 // Get sale items with product details
-$items = $conn->query("
-    SELECT si.*, p.size FROM sale_items si
-    LEFT JOIN products p ON si.product_id = p.product_id
+$items_result = $conn->query("
+    SELECT si.*, si.cup_size as size FROM sale_items si
     WHERE si.sale_id = {$sale['sale_id']}
 ");
+$items = [];
+if ($items_result) {
+    while ($row = $items_result->fetch_assoc()) {
+        $items[] = $row;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -181,9 +186,6 @@ $items = $conn->query("
             <div class="info-block">
                 <h4>Customer Information</h4>
                 <p><strong>Name:</strong> <?php echo $sale['customer_name'] ?: 'Walk-in Customer'; ?></p>
-                <?php if ($sale['customer_phone']): ?>
-                    <p><strong>Phone:</strong> <?php echo $sale['customer_phone']; ?></p>
-                <?php endif; ?>
                 <p><strong>Served by:</strong> <?php echo $sale['full_name']; ?></p>
             </div>
         </div>
@@ -199,7 +201,7 @@ $items = $conn->query("
                 </tr>
             </thead>
             <tbody>
-                <?php while ($item = $items->fetch_assoc()): ?>
+                <?php foreach ($items as $item): ?>
                     <tr>
                         <td><?php echo htmlspecialchars($item['product_name']); ?></td>
                         <td><?php echo $item['size'] ?: '—'; ?></td>
@@ -207,7 +209,7 @@ $items = $conn->query("
                         <td>₱<?php echo number_format($item['unit_price'], 2); ?></td>
                         <td>₱<?php echo number_format($item['subtotal'], 2); ?></td>
                     </tr>
-                <?php endwhile; ?>
+                <?php endforeach; ?>
             </tbody>
         </table>
         
