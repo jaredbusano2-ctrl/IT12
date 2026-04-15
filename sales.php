@@ -255,37 +255,55 @@ $isCashierView = (($user['role'] ?? null) === 'cashier');
         </div>
     </div>
     
+    <!-- Void Authorization Modal -->
+    <div id="voidAuthModal" class="modal">
+        <div class="modal-content" style="max-width: 450px;">
+            <div class="modal-header">
+                <h2>Void Authorization Required</h2>
+                <button class="modal-close" onclick="closeVoidAuthModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="color: #666; font-size: 13px; margin-bottom: 16px;">
+                    Admin authorization is required to void this item/sale.
+                </p>
+                
+                <div id="voidItemInfo" style="margin-bottom: 16px; padding: 12px; background: #f8f9fa; border-radius: 8px;">
+                    <!-- Item info will be inserted here -->
+                </div>
+                
+                <form id="voidAuthForm" onsubmit="submitVoidAuth(event)">
+                    <input type="hidden" id="voidType" value="">
+                    <input type="hidden" id="voidTargetId" value="">
+                    <input type="hidden" id="voidSaleId" value="">
+                    
+                    <div class="form-group">
+                        <label style="font-weight: 600; display: block; margin-bottom: 8px;">Admin Password</label>
+                        <input type="password" class="form-control" id="voidAdminPassword" placeholder="Enter admin password" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label style="font-weight: 600; display: block; margin-bottom: 8px;">Void Reason <span style="color: #d32f2f;">*</span></label>
+                        <textarea class="form-control" id="voidReasonText" placeholder="Enter reason for voiding..." rows="3" required style="resize: vertical;"></textarea>
+                        <div style="font-size: 11px; color: #999; margin-top: 4px;">
+                            <span id="voidCharCount">0</span>/500 characters
+                        </div>
+                    </div>
+                    
+                    <div style="display: flex; gap: 8px; margin-top: 20px;">
+                        <button type="button" class="btn btn-secondary" onclick="closeVoidAuthModal()" style="flex: 1;">Cancel</button>
+                        <button type="submit" class="btn btn-danger" id="voidSubmitBtn" style="flex: 1;">Confirm Void</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
     <script>
         // Store current sale data globally
         let currentSaleData = null;
         
         // CSRF Token
-        const csrfToken = '<?php echo htmlspecialchars($csrfToken); ?>';
-        const isCashierUser = <?php echo (($user['role'] ?? null) === 'cashier') ? 'true' : 'false'; ?>;
-
-        function getVoidCredentials() {
-            const adminPassword = (document.getElementById('voidAdminPassword')?.value || '').trim();
-            const voidReason = (document.getElementById('voidReason')?.value || '').trim();
-            return { adminPassword, voidReason };
-        }
-
-        async function postVoidRequest(payload) {
-            const res = await fetch('api/void_item.php', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRF-TOKEN': csrfToken
-                },
-                credentials: 'same-origin',
-                cache: 'no-store',
-                body: JSON.stringify(payload)
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok || !data?.success) {
-                throw new Error(data?.message || data?.error || 'Void request failed');
-            }
-            return data;
-        }
+        const csrfToken = '<?php echo htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'); ?>';
         
         async function viewSaleDetails(saleId) {
             document.getElementById('saleModal').classList.add('active');
@@ -304,24 +322,6 @@ $isCashierView = (($user['role'] ?? null) === 'cashier');
                     const voidedClass = isVoided ? 'opacity: 0.6;' : '';
                     const voidedBadge = isVoided ? '<span style="background: #d32f2f; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px;">VOIDED</span>' : '';
 
-                    const voidControls = isCashierUser ? `
-                        <div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap; margin: 12px 0 4px 0;">
-                            <div style="flex: 1; min-width: 220px;">
-                                <label style="display:block; font-size:12px; margin-bottom:6px; color: var(--text-secondary);">Admin Password</label>
-                                <input id="voidAdminPassword" type="password" class="form-control" placeholder="Admin password" style="margin-bottom:0;">
-                            </div>
-                            <div style="flex: 2; min-width: 280px;">
-                                <label style="display:block; font-size:12px; margin-bottom:6px; color: var(--text-secondary);">Void Reason</label>
-                                <input id="voidReason" type="text" class="form-control" placeholder="Reason (required)" maxlength="500" style="margin-bottom:0;">
-                            </div>
-                            <div style="display:flex; gap:8px; align-items:flex-end;">
-                                <button type="button" class="btn btn-danger btn-sm" ${isVoided ? 'disabled' : ''} onclick="voidEntireSale(${saleId})">Void Entire Sale</button>
-                            </div>
-                        </div>
-                        <p style="margin: 6px 0 0 0; font-size: 12px; color: var(--text-secondary);">
-                            Tip: Click a row’s Void button to void a specific item.
-                        </p>
-                    ` : '';
                     
                     let html = `
                         <div style="margin-bottom: 24px; ${voidedClass}">
@@ -330,7 +330,6 @@ $isCashierView = (($user['role'] ?? null) === 'cashier');
                             <p><strong>Cashier:</strong> ${sale.full_name || sale.cashier_name || ''}</p>
                             <p><strong>Date:</strong> ${new Date(sale.sale_date).toLocaleString()}</p>
                             <p><strong>Status:</strong> <span style="color: ${isVoided ? '#d32f2f' : '#10b981'};">${isVoided ? 'Voided' : 'Completed'}</span></p>
-                            ${voidControls}
                         </div>
                         
                         <h4 style="margin-bottom: 12px;">Items</h4>
@@ -341,7 +340,7 @@ $isCashierView = (($user['role'] ?? null) === 'cashier');
                                     <th>Qty</th>
                                     <th>Price</th>
                                     <th>Subtotal</th>
-                                    ${isCashierUser ? '<th style="width: 120px;">Actions</th>' : ''}
+                                    ${!isVoided ? '<th>Action</th>' : ''}
                                 </tr>
                             </thead>
                             <tbody>
@@ -350,17 +349,9 @@ $isCashierView = (($user['role'] ?? null) === 'cashier');
                     items.forEach(item => {
                         const itemVoided = item.is_voided == 1;
                         const itemStyle = itemVoided ? 'text-decoration: line-through; opacity: 0.5;' : '';
-
-                        let actionCell = '';
-                        if (isCashierUser) {
-                            const disabled = (isVoided || itemVoided) ? 'disabled' : '';
-                            const btnLabel = itemVoided ? 'Voided' : 'Void';
-                            actionCell = `
-                                <td>
-                                    <button type="button" class="btn btn-warning btn-sm" ${disabled} onclick="voidSaleItem(${item.sale_item_id})">${btnLabel}</button>
-                                </td>
-                            `;
-                        }
+                        const voidBtnHtml = (!isVoided && !itemVoided)
+                            ? `<button class="btn btn-danger btn-sm" onclick="openVoidItemModal(${item.sale_item_id}, '${item.product_name}', ${item.quantity}, ${item.subtotal})">Void</button>`
+                            : (itemVoided ? '<span style="color: #d32f2f; font-size: 11px;">Voided</span>' : '');
                         
                         html += `
                             <tr style="${itemStyle}">
@@ -368,7 +359,7 @@ $isCashierView = (($user['role'] ?? null) === 'cashier');
                                 <td>${item.quantity}</td>
                                 <td>₱${parseFloat(item.unit_price).toFixed(2)}</td>
                                 <td>₱${parseFloat(item.subtotal).toFixed(2)}</td>
-                                ${isCashierUser ? actionCell : ''}
+                                ${!isVoided ? `<td>${voidBtnHtml}</td>` : ''}
                             </tr>
                         `;
                     });
@@ -397,6 +388,17 @@ $isCashierView = (($user['role'] ?? null) === 'cashier');
                         </div>
                     `;
                     
+                    // Add Void Entire Sale button if not already voided
+                    if (!isVoided) {
+                        html += `
+                            <div style="margin-top: 24px; padding-top: 16px; border-top: 2px solid var(--border);">
+                                <button class="btn btn-danger" onclick="openVoidSaleModal(${saleId}, '${sale.invoice_number}')" style="width: 100%;">
+                                    🚫 Void Entire Sale
+                                </button>
+                            </div>
+                        `;
+                    }
+                    
                     document.getElementById('saleDetails').innerHTML = html;
                 } else {
                     document.getElementById('saleDetails').innerHTML = '<p>Error loading sale details</p>';
@@ -406,78 +408,141 @@ $isCashierView = (($user['role'] ?? null) === 'cashier');
                 console.error('Error:', error);
             }
         }
-
-        async function voidSaleItem(saleItemId) {
-            if (!currentSaleData?.sale) return;
-            const isVoided = currentSaleData.sale.status === 'voided';
-            if (isVoided) {
-                alert('This sale is already voided.');
-                return;
-            }
-
-            const { adminPassword, voidReason } = getVoidCredentials();
-            if (!adminPassword) {
-                alert('Admin password is required.');
-                return;
-            }
-            if (!voidReason) {
-                alert('Void reason is required.');
-                return;
-            }
-
-            if (!confirm('Void this item? This will restore inventory.')) return;
-
-            try {
-                await postVoidRequest({
-                    void_type: 'item',
-                    sale_item_id: saleItemId,
-                    admin_password: adminPassword,
-                    void_reason: voidReason
-                });
-                await viewSaleDetails(currentSaleData.saleId);
-                refreshSalesTable();
-            } catch (e) {
-                alert(e.message || 'Failed to void item');
-            }
-        }
-
-        async function voidEntireSale(saleId) {
-            if (!currentSaleData?.sale) return;
-            const isVoided = currentSaleData.sale.status === 'voided';
-            if (isVoided) {
-                alert('This sale is already voided.');
-                return;
-            }
-
-            const { adminPassword, voidReason } = getVoidCredentials();
-            if (!adminPassword) {
-                alert('Admin password is required.');
-                return;
-            }
-            if (!voidReason) {
-                alert('Void reason is required.');
-                return;
-            }
-
-            if (!confirm('Void the entire sale? This will void all items and restore inventory.')) return;
-
-            try {
-                await postVoidRequest({
-                    void_type: 'sale',
-                    sale_id: saleId,
-                    admin_password: adminPassword,
-                    void_reason: voidReason
-                });
-                await viewSaleDetails(saleId);
-                refreshSalesTable();
-            } catch (e) {
-                alert(e.message || 'Failed to void sale');
-            }
-        }
         
         function closeSaleModal() {
             document.getElementById('saleModal').classList.remove('active');
             currentSaleData = null;
+        }
+        
+        // Void Item Modal
+        function openVoidItemModal(saleItemId, productName, quantity, subtotal) {
+            document.getElementById('voidType').value = 'item';
+            document.getElementById('voidTargetId').value = saleItemId;
+            document.getElementById('voidSaleId').value = currentSaleData?.saleId || '';
+            document.getElementById('voidItemInfo').innerHTML = `
+                <strong>Item to Void:</strong><br>
+                ${productName} × ${quantity}<br>
+                <span style="color: #d32f2f;">Amount: ₱${parseFloat(subtotal).toFixed(2)}</span>
+            `;
+            document.getElementById('voidAdminPassword').value = '';
+            document.getElementById('voidReasonText').value = '';
+            document.getElementById('voidCharCount').textContent = '0';
+            document.getElementById('voidAuthModal').classList.add('active');
+            setTimeout(() => document.getElementById('voidAdminPassword').focus(), 100);
+        }
+        
+        // Void Entire Sale Modal
+        function openVoidSaleModal(saleId, invoiceNumber) {
+            document.getElementById('voidType').value = 'sale';
+            document.getElementById('voidTargetId').value = saleId;
+            document.getElementById('voidSaleId').value = saleId;
+            
+            const totalAmount = currentSaleData?.sale?.total_amount || 0;
+            const itemCount = currentSaleData?.items?.length || 0;
+            
+            document.getElementById('voidItemInfo').innerHTML = `
+                <strong>Void Entire Sale:</strong><br>
+                Invoice: ${invoiceNumber}<br>
+                Items: ${itemCount} item(s)<br>
+                <span style="color: #d32f2f;">Total Amount: ₱${parseFloat(totalAmount).toFixed(2)}</span>
+            `;
+            document.getElementById('voidAdminPassword').value = '';
+            document.getElementById('voidReasonText').value = '';
+            document.getElementById('voidCharCount').textContent = '0';
+            document.getElementById('voidAuthModal').classList.add('active');
+            setTimeout(() => document.getElementById('voidAdminPassword').focus(), 100);
+        }
+        
+        function closeVoidAuthModal() {
+            document.getElementById('voidAuthModal').classList.remove('active');
+            document.getElementById('voidAuthForm').reset();
+        }
+        
+        // Character counter for void reason
+        document.getElementById('voidReasonText')?.addEventListener('input', function() {
+            const cnt = this.value.length;
+            document.getElementById('voidCharCount').textContent = cnt;
+            if (cnt > 500) {
+                this.value = this.value.substring(0, 500);
+                document.getElementById('voidCharCount').textContent = '500';
+            }
+        });
+        
+        // Submit void authorization
+        async function submitVoidAuth(event) {
+            event.preventDefault();
+            
+            const voidType = document.getElementById('voidType').value;
+            const targetId = document.getElementById('voidTargetId').value;
+            const adminPassword = document.getElementById('voidAdminPassword').value;
+            const voidReason = document.getElementById('voidReasonText').value.trim();
+            
+            if (!voidReason) {
+                alert('Please enter a reason for voiding');
+                return;
+            }
+            
+            const submitBtn = document.getElementById('voidSubmitBtn');
+            const origText = submitBtn.textContent;
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Authorizing...';
+            
+            try {
+                const requestBody = {
+                    void_type: voidType,
+                    admin_password: adminPassword,
+                    void_reason: voidReason
+                };
+                
+                if (voidType === 'item') {
+                    requestBody.sale_item_id = parseInt(targetId);
+                } else if (voidType === 'sale') {
+                    requestBody.sale_id = parseInt(targetId);
+                }
+                
+                const response = await fetch('api/void_item.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+                
+                const result = await response.json();
+                
+                submitBtn.disabled = false;
+                submitBtn.textContent = origText;
+                
+                if (response.ok && result.success) {
+                    closeVoidAuthModal();
+                    
+                    // Show success message
+                    const message = voidType === 'item' 
+                        ? 'Item voided successfully! Inventory has been restored.'
+                        : 'Sale voided successfully! All inventory has been restored.';
+                    alert(message);
+                    
+                    // Refresh the sale details
+                    if (currentSaleData?.saleId) {
+                        viewSaleDetails(currentSaleData.saleId);
+                    }
+                    
+                    // Optionally refresh the page to update the list
+                    // location.reload();
+                } else if (response.status === 429) {
+                    alert(result.error || 'Too many failed attempts. Please wait before trying again.');
+                } else if (response.status === 401) {
+                    alert('Invalid admin password');
+                } else {
+                    alert('Error: ' + (result.error || 'Unable to process void'));
+                }
+            } catch (error) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = origText;
+                alert('Error contacting server');
+                console.error('Void error:', error);
+            }
         }
         
         function filterByDate() {
@@ -511,6 +576,8 @@ $isCashierView = (($user['role'] ?? null) === 'cashier');
             if (e.target.classList.contains('modal')) {
                 if (e.target.id === 'saleModal') {
                     closeSaleModal();
+                } else if (e.target.id === 'voidAuthModal') {
+                    closeVoidAuthModal();
                 }
             }
         });

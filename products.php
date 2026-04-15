@@ -24,7 +24,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     validateCSRFRequest();
     
     if (isset($_POST['add_product'])) {
-        $stmt = $conn->prepare("INSERT INTO products (product_code, product_name, category_id, description, cost_price, selling_price, stock_quantity, reorder_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt = $conn->prepare("INSERT INTO products (product_code, product_name, category_id, description, cost, price, stock_quantity, reorder_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->bind_param("ssissdii", 
             $_POST['product_code'], 
             $_POST['product_name'], 
@@ -40,7 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: products.php?success=added');
         exit();
     } elseif (isset($_POST['edit_product'])) {
-        $stmt = $conn->prepare("UPDATE products SET product_code=?, product_name=?, category_id=?, description=?, cost_price=?, selling_price=?, reorder_level=? WHERE product_id=?");
+        $stmt = $conn->prepare("UPDATE products SET product_code=?, product_name=?, category_id=?, description=?, cost=?, price=?, reorder_level=? WHERE product_id=?");
         $stmt->bind_param("ssissdii", 
             $_POST['product_code'], 
             $_POST['product_name'], 

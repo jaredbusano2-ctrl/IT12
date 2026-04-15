@@ -27,7 +27,7 @@ try {
     
     // Get sale details using prepared statement
     $saleStmt = $pdo->prepare("
-         SELECT s.*, u.full_name as cashier_name, u.full_name as full_name,
+        SELECT s.*, u.full_name as cashier_name,
                DATE_FORMAT(s.sale_date, '%M %d, %Y %h:%i %p') as formatted_date
         FROM sales s 
         LEFT JOIN users u ON s.user_id = u.user_id 

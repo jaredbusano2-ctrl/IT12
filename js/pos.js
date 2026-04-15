@@ -1,6 +1,6 @@
 // Cart data
 let cart = [];
-let selectedCupSize = {}; // legacy placeholder (no longer used)
+let selectedCupSize = {}; // Stores { productId: { cupId, cupSize, price } }
 
 // POS JavaScript loaded
 console.log('POS JavaScript loaded successfully!');
@@ -13,46 +13,132 @@ function getCSRFToken() {
 // Helper function to make secure fetch requests
 async function secureFetch(url, options = {}) {
     const csrfToken = getCSRFToken();
-    
+
     // Add CSRF token to headers
     options.headers = {
         ...options.headers,
         'X-CSRF-TOKEN': csrfToken
     };
-    
+
     return fetch(url, options);
 }
 
+// Select cup size for drink
+function selectCupSize(button, event) {
+    if (event) {
+        event.stopPropagation();
+    }
+
+    const productCard = button.closest('.product-card');
+    const productId = productCard.dataset.id;
+    const cupId = parseInt(button.dataset.cupId);
+    const cupSize = button.dataset.cupSize;
+    const price = parseFloat(button.dataset.price);
+
+    // Clear previous selection for this product
+    const cupButtons = productCard.querySelectorAll('.cup-btn');
+    cupButtons.forEach(btn => btn.classList.remove('selected'));
+
+    // Select current button
+    button.classList.add('selected');
+
+    // Store selected cup size with all details
+    selectedCupSize[productId] = {
+        cupId: cupId,
+        cupSize: cupSize,
+        price: price
+    };
+
+    // Update the displayed price on the product card
+    const priceDiv = productCard.querySelector('.price');
+    if (priceDiv) {
+        priceDiv.textContent = '₱' + price.toFixed(2);
+    }
+
+    // Update the data-price attribute for addToCart
+    productCard.dataset.price = price;
+
+    console.log('Selected cup size:', productId, selectedCupSize[productId]);
+
+    // Automatically add to cart after cup size selection
+    setTimeout(() => {
+        addToCart(productCard);
+    }, 100);
+}
+
+// Handle product card click
+function handleProductClick(element, event) {
+    console.log('Product clicked:', element.dataset);
+    const isDrink = element.dataset.isDrink === 'true';
+    const hasCupSizes = element.dataset.cupSizes && element.dataset.cupSizes !== '[]';
+    console.log('Is drink:', isDrink, 'Has cup sizes:', hasCupSizes);
+
+    if (isDrink && hasCupSizes) {
+        // For drinks with cup sizes, require cup size selection
+        const productId = element.dataset.id;
+        console.log('Product ID:', productId);
+        console.log('Selected cup sizes:', selectedCupSize);
+
+        if (!selectedCupSize[productId]) {
+            alert('Please select a cup size for this drink!');
+            return;
+        }
+        // If cup size is selected, add to cart
+        addToCart(element);
+    } else {
+        // For non-drinks or drinks without cup sizes, add directly to cart
+        addToCart(element);
+    }
+}
+
 // Add product to cart
-function addToCart(element, options = {}) {
+function addToCart(element) {
     console.log('Adding product:', element.dataset); // Debug log
-    
+
     const productId = element.dataset.id;
     const productCode = element.dataset.code;
     const productName = element.dataset.name;
-    const productPrice = parseFloat(options.price ?? element.dataset.price);
     const productStock = parseInt(element.dataset.stock);
+    const isDrink = element.dataset.isDrink === 'true';
+    const hasCupSizes = element.dataset.cupSizes && element.dataset.cupSizes !== '[]';
 
-    const cupSize = options.cupSize ?? element.dataset.selectedCupSize ?? 'none';
-    const cupIdRaw = options.cupId ?? element.dataset.selectedCupId ?? null;
-    const cupId = cupIdRaw !== null && cupIdRaw !== undefined && cupIdRaw !== '' ? parseInt(cupIdRaw) : null;
+    // Get price and cup details
+    let productPrice, cupSize, cupId;
 
-    console.log('Product details:', { productId, productCode, productName, productPrice, productStock }); // Debug log
-    
-    if (productStock <= 0) {
+    if (isDrink && hasCupSizes && selectedCupSize[productId]) {
+        // Use selected cup size price
+        productPrice = selectedCupSize[productId].price;
+        cupSize = selectedCupSize[productId].cupSize;
+        cupId = selectedCupSize[productId].cupId;
+    } else {
+        // Use base product price
+        productPrice = parseFloat(element.dataset.price);
+        cupSize = 'none';
+        cupId = null;
+    }
+
+    console.log('Product details:', { productId, productCode, productName, productPrice, productStock, isDrink, cupSize, cupId }); // Debug log
+
+    // Check if it's a drink with cup sizes and cup size is selected
+    if (isDrink && hasCupSizes && !selectedCupSize[productId]) {
+        alert('Please select a cup size for this drink!');
+        return;
+    }
+
+    if (productStock <= 0 && !isDrink) {
         alert('Product is out of stock!');
         return;
     }
     
     // Create unique key for cart items (product + cup size)
-    const cartKey = `${productId}:${cupId || 'none'}`;
+    const cartKey = (isDrink && cupId) ? `${productId}_${cupId}` : productId;
     
     // Check if product already in cart
     const existingItem = cart.find(item => item.cartKey === cartKey);
     
     if (existingItem) {
         console.log('Product already in cart, updating quantity'); // Debug log
-        if (existingItem.quantity < productStock) {
+        if (existingItem.quantity < productStock || isDrink) {
             existingItem.quantity++;
             existingItem.subtotal = existingItem.quantity * existingItem.price;
             console.log('Updated existing item:', existingItem); // Debug log
@@ -72,7 +158,8 @@ function addToCart(element, options = {}) {
             stock: productStock,
             subtotal: productPrice,
             cupSize: cupSize,
-            cupId: cupId
+            cupId: cupId,
+            isDrink: isDrink
         };
         console.log('New item created:', newItem); // Debug log
         cart.push(newItem);
@@ -80,86 +167,6 @@ function addToCart(element, options = {}) {
     
     console.log('Cart after adding:', cart); // Debug log
     updateCart();
-}
-
-// ============================================
-// CUP SIZE SELECTION + PRODUCT CLICK HANDLERS
-// ============================================
-
-function parseCupSizesFromCard(card) {
-    try {
-        const raw = card?.dataset?.cupSizes;
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-        console.warn('Failed to parse cup sizes:', e);
-        return [];
-    }
-}
-
-function applyCupSelection(card, cup) {
-    if (!card || !cup) return;
-
-    card.dataset.selectedCupId = String(cup.cup_id);
-    card.dataset.selectedCupSize = String(cup.cup_size);
-    card.dataset.selectedCupPrice = String(cup.price);
-    card.dataset.price = String(cup.price);
-
-    const priceEl = card.querySelector('.price');
-    if (priceEl) {
-        priceEl.textContent = `₱${Number(cup.price).toFixed(2)}`;
-        priceEl.dataset.basePrice = String(cup.price);
-    }
-}
-
-function selectCupSize(button, event) {
-    if (event) {
-        event.preventDefault();
-        event.stopPropagation();
-    }
-
-    const card = button.closest('.product-card');
-    if (!card) return;
-
-    // Update selected state styling
-    const buttons = card.querySelectorAll('.cup-btn');
-    buttons.forEach(b => b.classList.remove('selected'));
-    button.classList.add('selected');
-
-    const cup = {
-        cup_id: parseInt(button.dataset.cupId),
-        cup_size: button.dataset.cupSize,
-        price: parseFloat(button.dataset.price)
-    };
-    applyCupSelection(card, cup);
-
-    // Requirement: clicking a specific size should immediately add to cart
-    addToCart(card, {
-        cupId: cup.cup_id,
-        cupSize: cup.cup_size,
-        price: cup.price
-    });
-}
-
-function handleProductClick(card, event) {
-    if (event) {
-        // If click originated from a cup button, let it handle itself
-        if (event.target && event.target.closest && event.target.closest('.cup-btn')) {
-            return;
-        }
-    }
-
-    const isDrink = String(card.dataset.isDrink).toLowerCase() === 'true';
-    const cupSizes = parseCupSizesFromCard(card);
-
-    if (isDrink && cupSizes.length > 0) {
-        alert('Please click a cup size (12oz/16oz) to add.');
-        return;
-    }
-
-    // Non-drink or no cup sizes
-    addToCart(card, { cupId: null, cupSize: 'none' });
 }
 
 // Update cart display
@@ -186,6 +193,7 @@ function updateCart() {
                         <span style="font-weight: 600; min-width: 24px; text-align: center; font-size: 12px;">${item.quantity}</span>
                         <button type="button" class="quantity-btn" onclick="increaseQuantity(${index})" style="width: 26px; height: 26px; border: none; border-radius: 4px; background: #007bff; color: white; cursor: pointer; font-weight: bold; font-size: 14px;">+</button>
                     </div>
+                    <button type="button" class="btn-void-item" onclick="openItemVoidModal(${index})" style="padding: 4px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; font-size: 11px; font-weight: 600; cursor: pointer;">Void</button>
                 </div>
             </div>
         `}).join('');
@@ -319,10 +327,131 @@ function closeCheckout() {
     document.getElementById('checkoutModal').classList.remove('active');
 }
 
-// ============================================
-// CHECKOUT MODAL HELPERS
-// ============================================
+// SALE VOID MODAL HELPERS
+function openSaleVoidModal() {
+    // Check if cart is empty
+    if (!cart || cart.length === 0) {
+        alert('Cart is empty - nothing to void!');
+        return;
+    }
+    
+    // Test if void modal exists
+    const voidModal = document.getElementById('voidModal');
+    if (!voidModal) {
+        alert('Void modal not found!');
+        return;
+    }
+    
+    // Test if form exists
+    const voidForm = document.getElementById('voidForm');
+    if (!voidForm) {
+        alert('Void form not found!');
+        return;
+    }
+    
+    // Populate items list - simple "Product x Qty" format
+    const voidItemsList = document.getElementById('voidItemsList');
+    const itemsList = cart.map(item => {
+        const displayName = item.cupSize && item.cupSize !== 'none' 
+            ? `${item.name} (${item.cupSize})` 
+            : item.name;
+        return `${displayName} x ${item.quantity}`;
+    });
+    
+    // Display as comma-separated list
+    voidItemsList.textContent = itemsList.join(', ');
+    
+    // Reset form
+    document.getElementById('adminPassword').value = '';
+    document.getElementById('voidReason').value = '';
+    document.getElementById('charCount').textContent = '0';
+    document.getElementById('voidModal').classList.add('active');
+    setTimeout(() => document.getElementById('adminPassword').focus(), 100);
+}
 
+function closeSaleVoidModal() {
+    document.getElementById('voidModal').classList.remove('active');
+    document.getElementById('voidForm').reset();
+}
+
+// sale form char counter
+document.getElementById('voidReason')?.addEventListener('input', function() {
+    const cnt = this.value.length;
+    document.getElementById('charCount').textContent = cnt;
+    if (cnt > 500) {
+        this.value = this.value.substring(0, 500);
+        document.getElementById('charCount').textContent = '500';
+    }
+});
+
+// handle sale void submission
+document.getElementById('voidForm')?.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const adminPassword = document.getElementById('adminPassword').value;
+    const reason = document.getElementById('voidReason').value.trim();
+    if (!reason) {
+        alert('Please enter a reason for voiding the sale');
+        return;
+    }
+    if (cart.length === 0) {
+        alert('Cart is empty - nothing to void');
+        closeSaleVoidModal();
+        return;
+    }
+    
+    // Calculate total for logging
+    const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
+    
+    const submitBtn = this.querySelector('button[type="submit"]');
+    const orig = submitBtn.textContent;
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Authorizing...';
+    try {
+        // send cart void request to updated API with CSRF protection
+        const response = await secureFetch('api/void_item.php', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                void_type: 'cart',
+                admin_password: adminPassword,
+                void_reason: reason,
+                total_amount: cartTotal,
+                cart_items: cart.map(item => ({
+                    product_id: item.id,
+                    product_name: item.name,
+                    quantity: item.quantity,
+                    price: item.price,
+                    subtotal: item.subtotal,
+                    cup_size: item.cupSize || 'none'
+                }))
+            })
+        });
+        const result = await response.json();
+        submitBtn.disabled = false;
+        submitBtn.textContent = orig;
+        if (response.ok && result.success) {
+            // Clear cart after successful void
+            cart = [];
+            selectedCupSize = {};
+            updateCart();
+            closeSaleVoidModal();
+            alert('✓ Cart voided and recorded!\n\nAdmin authorization logged.');
+        } else if (response.status === 401) {
+            alert('❌ Invalid admin password.\n\nPlease try again.');
+        } else if (response.status === 429) {
+            alert('⚠️ Too many failed attempts.\n\nPlease wait before trying again.');
+        } else {
+            alert('Error: ' + (result.error || 'Unable to void cart'));
+        }
+    } catch(err) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = orig;
+        alert('Error contacting server');
+        console.error('Void error:', err);
+    }
+});
+
+// Display cart items in modal
 function displayModalCart() {
     const modalCartItems = document.getElementById('modalCartItems');
     if (!modalCartItems) return;
@@ -496,14 +625,219 @@ document.getElementById('filterCategory')?.addEventListener('change', function()
 // Close modal on outside click
 window.addEventListener('click', function(e) {
     const checkoutModal = document.getElementById('checkoutModal');
-    
+    const voidModal = document.getElementById('voidModal');
+
     if (e.target === checkoutModal) {
         closeCheckout();
     }
+
+    if (e.target === voidModal) {
+        closeSaleVoidModal();
+    }
 });
 
+// ============================================
+// CLEAR CART FUNCTIONALITY
+// ============================================
+
+/**
+ * Clear cart with confirmation (no admin authorization needed)
+ * This simply empties the cart - does NOT affect database
+ */
+function clearCartConfirm() {
+    if (!cart || cart.length === 0) {
+        alert('Cart is already empty!');
+        return;
+    }
+    
+    const itemCount = cart.length;
+    const totalAmount = cart.reduce((sum, item) => sum + (item.subtotal || 0), 0);
+    
+    if (confirm('Clear all ' + itemCount + ' item(s) from the cart?\n\nTotal: ₱' + totalAmount.toFixed(2) + '\n\nThis action cannot be undone.')) {
+        clearCartCompletely();
+        alert('✓ Cart cleared successfully!');
+    }
+}
+
+// Make clearCartConfirm globally accessible
+window.clearCartConfirm = clearCartConfirm;
+
+/**
+ * Clear cart completely - resets all cart state
+ */
+function clearCartCompletely() {
+    // Clear cart array
+    cart = [];
+    
+    // Reset cup size selections
+    selectedCupSize = {};
+    
+    // Reset all cup size buttons in product grid
+    document.querySelectorAll('.cup-btn.selected').forEach(btn => {
+        btn.classList.remove('selected');
+    });
+    
+    // Reset product prices to base prices
+    document.querySelectorAll('.product-card').forEach(card => {
+        const priceDiv = card.querySelector('.price');
+        const basePrice = priceDiv?.dataset?.basePrice;
+        if (basePrice && priceDiv) {
+            priceDiv.textContent = '₱' + parseFloat(basePrice).toFixed(2);
+            card.dataset.price = basePrice;
+        }
+    });
+    
+    // Update cart display
+    updateCart();
+    
+    console.log('Cart cleared successfully');
+}
+
+// Close void modal helper
+function closeVoidModal() {
+    document.getElementById('voidModal').classList.remove('active');
+    document.getElementById('voidForm').reset();
+}
+
+// Track which item is being voided
+let voidingItemIndex = null;
+
+/**
+ * Open void modal for a single cart item
+ * @param {number} index - The index of the item in the cart array
+ */
+function openItemVoidModal(index) {
+    const item = cart[index];
+    if (!item) {
+        alert('Item not found in cart');
+        return;
+    }
+    
+    voidingItemIndex = index;
+    
+    // Check if we have the item void modal, otherwise use the regular void modal
+    const itemVoidModal = document.getElementById('itemVoidModal');
+    
+    if (itemVoidModal) {
+        // Update item details in the modal
+        const displayName = item.cupSize && item.cupSize !== 'none' 
+            ? `${item.name} (${item.cupSize})` 
+            : item.name;
+        document.getElementById('itemVoidName').textContent = displayName;
+        document.getElementById('itemVoidQty').textContent = item.quantity;
+        document.getElementById('itemVoidPrice').textContent = '₱' + item.price.toFixed(2);
+        document.getElementById('itemVoidSubtotal').textContent = '₱' + item.subtotal.toFixed(2);
+        
+        // Reset form
+        document.getElementById('itemVoidAdminPassword').value = '';
+        document.getElementById('itemVoidReason').value = '';
+        document.getElementById('itemVoidCharCount').textContent = '0';
+        
+        // Show modal
+        itemVoidModal.classList.add('active');
+        setTimeout(() => document.getElementById('itemVoidAdminPassword').focus(), 100);
+    } else {
+        // Fallback: Use a simple confirm for now (will be replaced by modal)
+        if (confirm(`Remove "${item.name}" from cart?\n\nThis will remove all ${item.quantity} units.`)) {
+            cart.splice(index, 1);
+            updateCart();
+        }
+    }
+}
+
+/**
+ * Close item void modal
+ */
+function closeItemVoidModal() {
+    const modal = document.getElementById('itemVoidModal');
+    if (modal) {
+        modal.classList.remove('active');
+        const form = document.getElementById('itemVoidForm');
+        if (form) form.reset();
+    }
+    voidingItemIndex = null;
+}
+
+/**
+ * Handle item void form submission
+ */
+async function handleItemVoid(e) {
+    e.preventDefault();
+    
+    if (voidingItemIndex === null || !cart[voidingItemIndex]) {
+        alert('No item selected for void');
+        closeItemVoidModal();
+        return;
+    }
+    
+    const item = cart[voidingItemIndex];
+    const adminPassword = document.getElementById('itemVoidAdminPassword').value;
+    const reason = document.getElementById('itemVoidReason').value.trim();
+    
+    if (!reason) {
+        alert('Please enter a reason for voiding this item');
+        return;
+    }
+    
+    const submitBtn = document.querySelector('#itemVoidForm button[type="submit"]');
+    const originalText = submitBtn.textContent;
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Authorizing...';
+    
+    try {
+        const response = await secureFetch('api/void_item.php', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                void_type: 'cart_item',
+                admin_password: adminPassword,
+                void_reason: reason,
+                item: {
+                    product_id: item.id,
+                    product_name: item.name,
+                    quantity: item.quantity,
+                    price: item.price,
+                    subtotal: item.subtotal,
+                    cup_size: item.cupSize || 'none'
+                }
+            })
+        });
+        
+        const result = await response.json();
+        
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText;
+        
+        if (response.ok && result.success) {
+            // Remove item from cart
+            cart.splice(voidingItemIndex, 1);
+            updateCart();
+            closeItemVoidModal();
+            alert('✓ Item voided successfully!\n\nAdmin authorization logged.');
+        } else if (response.status === 401) {
+            alert('❌ Invalid admin password.\n\nPlease try again.');
+        } else if (response.status === 429) {
+            alert('⚠️ Too many failed attempts.\n\nPlease wait before trying again.');
+        } else {
+            alert('Error: ' + (result.error || 'Unable to void item'));
+        }
+    } catch (err) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText;
+        alert('Error contacting server');
+        console.error('Void error:', err);
+    }
+}
+
 // Make all functions globally accessible
-window.returnCart = returnCart;
+window.clearCartConfirm = clearCartConfirm;
+window.clearCartCompletely = clearCartCompletely;
+window.openSaleVoidModal = openSaleVoidModal;
+window.closeSaleVoidModal = closeSaleVoidModal;
+window.closeVoidModal = closeVoidModal;
+window.openItemVoidModal = openItemVoidModal;
+window.closeItemVoidModal = closeItemVoidModal;
+window.handleItemVoid = handleItemVoid;
 window.openCheckout = openCheckout;
 window.closeCheckout = closeCheckout;
 window.updateCart = updateCart;
@@ -520,16 +854,26 @@ window.updateCart = updateCart;
     }
     
     function setupCartButtons() {
-        // Return Cart Button
-        const returnBtn = document.getElementById('returnCartBtn');
-        if (returnBtn) {
-            returnBtn.addEventListener('click', function(e) {
+        // Clear Cart Button
+        const clearBtn = document.getElementById('clearCartBtn');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
-                returnCart();
+                clearCartConfirm();
             });
         }
-        
+
+        // Void Cart Button
+        const voidBtn = document.getElementById('voidCartBtn');
+        if (voidBtn) {
+            voidBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                openSaleVoidModal();
+            });
+        }
+
         // Complete Sale Button
         const completeBtn = document.getElementById('completeSaleBtn');
         if (completeBtn) {

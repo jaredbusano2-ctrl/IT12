@@ -370,7 +370,7 @@ function voidEntireSale(int $saleId, int $adminId, int $requesterId, string $rea
         }
         
         if ($sale['status'] === 'voided') {
-            return ['success' => false, 'error' => 'Transaction already voided'];
+            return ['success' => false, 'error' => 'Sale is already voided'];
         }
         
         // Get all non-voided items

@@ -93,7 +93,7 @@ try {
             throw new Exception("Invalid quantity for item.");
         }
         
-        // Get actual price from database - check cup sizes first, then base price
+        // Get actual price from database - check cup sizes first, then base price.
         $actualPrice = null;
         
         // If cup_id is provided, check product_cup_sizes table
@@ -106,21 +106,21 @@ try {
             }
         }
         
-        // If no cup price found, get base selling_price
+        // If no cup price found, get the base product price.
         if ($actualPrice === null) {
-            $priceStmt = $pdo->prepare("SELECT selling_price FROM products WHERE product_id = ?");
+            $priceStmt = $pdo->prepare("SELECT COALESCE(selling_price, price) AS base_price FROM products WHERE product_id = ?");
             $priceStmt->execute([$productId]);
             $dbProduct = $priceStmt->fetch();
             
             if (!$dbProduct) {
                 throw new Exception("Product not found: {$productId}");
             }
-            $actualPrice = (float)$dbProduct['selling_price'];
+            $actualPrice = (float)$dbProduct['base_price'];
         }
         
         // Also get all valid prices for this product (base + all cup sizes) for tolerance check
         $validPricesStmt = $pdo->prepare("
-            SELECT selling_price as price FROM products WHERE product_id = ?
+            SELECT COALESCE(selling_price, price) as price FROM products WHERE product_id = ?
             UNION
             SELECT price FROM product_cup_sizes WHERE product_id = ?
         ");
@@ -173,7 +173,7 @@ try {
     // ==========================================
     // END FRAUD PREVENTION
     // ==========================================
-    
+
     // Validate stock availability before processing
     $stockErrors = [];
     foreach ($data['items'] as $item) {

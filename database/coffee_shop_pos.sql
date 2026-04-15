@@ -450,22 +450,6 @@ CREATE TABLE `activity_logs` (
 ) ENGINE=InnoDB;
 
 -- =====================================================
--- AUDIT LOGS TABLE (simple, defense-friendly)
--- =====================================================
-DROP TABLE IF EXISTS `audit_logs`;
-CREATE TABLE `audit_logs` (
-    `id` INT AUTO_INCREMENT PRIMARY KEY,
-    `user_id` INT NULL,
-    `action` VARCHAR(255) NOT NULL,
-    `description` TEXT,
-    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX `idx_action` (`action`),
-    INDEX `idx_created_at` (`created_at`),
-    INDEX `idx_user_id` (`user_id`),
-    CONSTRAINT `fk_audit_user` FOREIGN KEY (`user_id`) REFERENCES `users`(`user_id`) ON DELETE SET NULL
-) ENGINE=InnoDB;
-
--- =====================================================
 -- LOGIN ATTEMPTS TABLE (for rate limiting - enhanced)
 -- =====================================================
 DROP TABLE IF EXISTS `login_attempts`;

@@ -66,6 +66,12 @@ $currentPage = basename($_SERVER['PHP_SELF'] ?? '');
                         Ingredients
                     </a>
                 </li>
+                <li>
+                    <a href="inventory.php#stock-movements" class="<?php echo $currentPage === 'inventory.php' ? 'active' : ''; ?>">
+                        <span class="icon">📈</span>
+                        Stock Movements
+                    </a>
+                </li>
             </ul>
         </li>
 

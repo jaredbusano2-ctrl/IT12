@@ -1,8 +1,8 @@
 <?php
 /**
  * Activity Logs Page - Admin Only
- * Real-time system activity monitoring with filtering and pagination
- * Features: AJAX polling every 5 seconds, tamper-resistant display
+ * Real-time system activity monitoring with filtering and pagination.
+ * Features: AJAX polling every 5 seconds.
  */
 
 require_once 'includes/db.php';
@@ -189,7 +189,7 @@ if (!empty($logs)) {
             color: #888;
             font-size: 10px;
         }
-        
+
         .pagination-controls {
             display: flex;
             justify-content: center;

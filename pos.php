@@ -28,7 +28,7 @@ $products = $conn->query("
 // Get categories for filter
 $categories = $conn->query("SELECT * FROM categories ORDER BY category_name ASC");
 
-// Get product cup sizes and default cups (12oz/16oz) so drinks can choose size
+// Get product cup sizes for JavaScript
 $cupSizesQuery = $conn->query("
     SELECT pcs.product_id, pcs.cup_id, pcs.price, ci.cup_size
     FROM product_cup_sizes pcs
@@ -45,17 +45,6 @@ if ($cupSizesQuery) {
             'cup_size' => $row['cup_size'],
             'price' => (float)$row['price']
         ];
-    }
-}
-
-$defaultCupIds = [];
-$defaultCupsQuery = $conn->query("SELECT cup_id, cup_size FROM cup_inventory WHERE status = 'active'");
-if ($defaultCupsQuery) {
-    while ($cup = $defaultCupsQuery->fetch_assoc()) {
-        $normalized = strtolower(preg_replace('/\s+/', '', (string)$cup['cup_size']));
-        if ($normalized === '12oz' || $normalized === '16oz') {
-            $defaultCupIds[$normalized] = (int)$cup['cup_id'];
-        }
     }
 }
 ?>
@@ -766,81 +755,28 @@ if ($defaultCupsQuery) {
                 </div>
                 
                 <div class="product-grid">
-                    <?php while ($product = $products->fetch_assoc()):
+                    <?php while ($product = $products->fetch_assoc()): 
                         $productId = (int)$product['product_id'];
-                        $hasDrinkFlags = array_key_exists('requires_cup', $product) || array_key_exists('is_drink', $product);
-                        $isDrink = $hasDrinkFlags
-                            ? (!empty($product['requires_cup']) || !empty($product['is_drink']))
-                            : (isset($product['category_name']) && preg_match('/coffee|matcha|frappe|non[-\s]?coffee|beverage|tea|juice|chocolate/i', (string)$product['category_name']));
+                        $hasCupSizes = !empty($productCupSizes[$productId]);
+                        $cupSizesJson = $hasCupSizes
+                            ? htmlspecialchars(json_encode($productCupSizes[$productId]), ENT_QUOTES, 'UTF-8')
+                            : '[]';
 
-                        // Base price (api/process-sale.php verifies against selling_price)
-                        $baseProductPrice = $product['selling_price'] ?? $product['price'] ?? 0;
-
-                        $cupOptions = $productCupSizes[$productId] ?? [];
-                        if ($isDrink && !empty($defaultCupIds)) {
-                            $categoryName = (string)($product['category_name'] ?? '');
-                            $productName = (string)($product['product_name'] ?? '');
-
-                            // Requirement: only HOT coffee/beverages and MATCHA have 12oz+16oz.
-                            // Everything else that is a drink should be 16oz only.
-                            $isMatcha = preg_match('/matcha/i', $categoryName) === 1 || preg_match('/matcha/i', $productName) === 1;
-                            $isHot = preg_match('/\bhot\b/i', $productName) === 1;
-                            $isCoffeeCategory = preg_match('/coffee/i', $categoryName) === 1;
-                            $isIced = preg_match('/\biced\b/i', $productName) === 1;
-
-                            $allowTwoSizes = $isMatcha || ($isCoffeeCategory && !$isIced) || $isHot;
-                            $desiredSizes = $allowTwoSizes ? ['12oz', '16oz'] : ['16oz'];
-
-                            $bySize = [];
-                            foreach ($cupOptions as $opt) {
-                                if (!empty($opt['cup_size'])) {
-                                    $key = strtolower(preg_replace('/\s+/', '', (string)$opt['cup_size']));
-                                    $bySize[$key] = $opt;
-                                }
-                            }
-
-                            $fallbackPrice = $baseProductPrice;
-                            if (!empty($cupOptions) && isset($cupOptions[0]['price'])) {
-                                $fallbackPrice = (float)$cupOptions[0]['price'];
-                            }
-
-                            foreach ($desiredSizes as $sizeKey) {
-                                if (isset($defaultCupIds[$sizeKey]) && !isset($bySize[$sizeKey])) {
-                                    $bySize[$sizeKey] = [
-                                        'cup_id' => (int)$defaultCupIds[$sizeKey],
-                                        'cup_size' => $sizeKey,
-                                        'price' => (float)$fallbackPrice
-                                    ];
-                                }
-                            }
-
-                            $cupOptions = [];
-                            foreach ($desiredSizes as $sizeKey) {
-                                if (isset($bySize[$sizeKey])) {
-                                    $cupOptions[] = $bySize[$sizeKey];
-                                }
-                            }
+                        // Support both 'price' and 'selling_price' column names
+                        $basePrice = $product['selling_price'] ?? $product['price'] ?? 0;
+                        // If product has cup sizes, use the first cup size price as base
+                        if ($hasCupSizes && isset($productCupSizes[$productId][0]['price'])) {
+                            $basePrice = $productCupSizes[$productId][0]['price'];
                         }
 
-                        $hasCupSizes = $isDrink && !empty($cupOptions);
-                        $cupSizesJson = $hasCupSizes ? htmlspecialchars(json_encode($cupOptions), ENT_QUOTES, 'UTF-8') : '[]';
-
-                        $displayPrice = $baseProductPrice;
-                        if ($hasCupSizes) {
-                            $displayPrice = (float)$cupOptions[0]['price'];
-                            foreach ($cupOptions as $opt) {
-                                if (($opt['cup_size'] ?? '') === '16oz') {
-                                    $displayPrice = (float)$opt['price'];
-                                    break;
-                                }
-                            }
-                        }
+                        $isDrinkFlag = (!empty($product['requires_cup']) || !empty($product['is_drink']));
+                        $isDrink = $isDrinkFlag || $hasCupSizes;
                     ?>
                         <div class="product-card"
                              data-id="<?php echo $productId; ?>"
                              data-code="<?php echo htmlspecialchars($product['product_code']); ?>"
                              data-name="<?php echo htmlspecialchars($product['product_name']); ?>"
-                             data-price="<?php echo (float)$displayPrice; ?>"
+                             data-price="<?php echo $basePrice; ?>"
                              data-stock="<?php echo $product['stock_quantity']; ?>"
                              data-category="<?php echo $product['category_id']; ?>"
                              data-is-drink="<?php echo $isDrink ? 'true' : 'false'; ?>"
@@ -848,11 +784,11 @@ if ($defaultCupsQuery) {
                              onclick="handleProductClick(this, event)">
                              
                             <h4><?php echo htmlspecialchars($product['product_name']); ?></h4>
-
+                            
                             <?php if ($hasCupSizes): ?>
                                 <div class="cup-size-buttons">
-                                    <?php foreach ($cupOptions as $cupSize): ?>
-                                        <button type="button" class="cup-btn"
+                                    <?php foreach ($productCupSizes[$productId] as $cupSize): ?>
+                                        <button type="button" class="cup-btn" 
                                                 data-cup-id="<?php echo $cupSize['cup_id']; ?>"
                                                 data-cup-size="<?php echo $cupSize['cup_size']; ?>"
                                                 data-price="<?php echo $cupSize['price']; ?>"
@@ -861,9 +797,11 @@ if ($defaultCupsQuery) {
                                         </button>
                                     <?php endforeach; ?>
                                 </div>
-                                <div class="price" data-base-price="<?php echo (float)$displayPrice; ?>">₱<?php echo number_format((float)$displayPrice, 2); ?></div>
+                                <div class="price" data-base-price="<?php echo $basePrice; ?>">
+                                    ₱<?php echo number_format($basePrice, 2); ?>
+                                </div>
                             <?php else: ?>
-                                <div class="price">₱<?php echo number_format((float)$displayPrice, 2); ?></div>
+                                <div class="price">₱<?php echo number_format($basePrice, 2); ?></div>
                             <?php endif; ?>
                             
                             <div class="stock">Stock: <?php echo $product['stock_quantity']; ?></div>
@@ -901,12 +839,12 @@ if ($defaultCupsQuery) {
                 
                 <!-- Cart Action Buttons -->
                 <div class="cart-actions">
-                    <button type="button" id="returnCartBtn" style="background: #dc3545; color: white;">
-                        🗑️ RETURN CART
+                    <button type="button" id="clearCartBtn" style="background: #dc3545; color: white;">
+                        🗑️ CLEAR CART
                     </button>
-                    <a href="sales.php" style="display: block; text-align: center; background: #6c757d; color: white; padding: 12px 16px; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 13px; text-transform: uppercase; border: none; cursor: pointer; letter-spacing: 0.5px;">
-                        ⚠️ VOID SALE
-                    </a>
+                    <button type="button" id="voidCartBtn" style="background: #6c757d; color: white;">
+                        ⚠️ VOID CART
+                    </button>
                     <button type="button" id="completeSaleBtn" style="background: #28a745; color: white;">
                         ✓ COMPLETE SALE
                     </button>
@@ -998,6 +936,124 @@ if ($defaultCupsQuery) {
     </div>
 </div>
 
+<!-- CART VOID AUTHORIZATION MODAL -->
+<div id="voidModal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+        <div class="modal-header">
+            <h2>Void Cart Authorization</h2>
+            <button class="modal-close" onclick="closeVoidModal()">&times;</button>
+        </div>
+
+        <div class="modal-body">
+            <div style="margin-bottom: 16px;">
+                <p style="color: #666; font-size: 13px; margin: 0 0 16px 0;">
+                    All items below will be voided. This requires admin authorization.
+                </p>
+
+                <div style="margin-bottom: 16px;">
+                    <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
+                        Items to Void
+                    </label>
+                    <div id="voidItemsList" style="max-height: 200px; overflow-y: auto; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 12px; font-size: 14px; color: #333;"></div>
+                </div>
+
+                <form id="voidForm" method="POST" action="">
+                    <input type="hidden" id="voidSaleItemId" name="sale_item_id">
+                    <input type="hidden" name="void_item" value="1">
+
+                    <div class="form-group">
+                        <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
+                            Admin Password
+                        </label>
+                        <input type="password" class="form-control" id="adminPassword" name="admin_password"
+                               placeholder="Enter admin password" required>
+                    </div>
+
+                    <div style="display: flex; gap: 8px; margin-top: 20px;">
+                        <button type="button" class="btn btn-secondary" onclick="closeVoidModal()" style="flex: 1;">
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn btn-danger" style="flex: 1;">
+                            Confirm Void
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SINGLE ITEM VOID MODAL -->
+<div id="itemVoidModal" class="modal">
+    <div class="modal-content" style="max-width: 450px;">
+        <div class="modal-header">
+            <h2>Void Item</h2>
+            <button class="modal-close" onclick="closeItemVoidModal()">&times;</button>
+        </div>
+
+        <div class="modal-body">
+            <div style="margin-bottom: 16px;">
+                <p style="color: #666; font-size: 13px; margin: 0 0 16px 0;">
+                    This action requires admin authorization to void.
+                </p>
+
+                <!-- Item Details Display -->
+                <div style="background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                        <tr>
+                            <td style="padding: 4px 0; color: #666;">Product:</td>
+                            <td style="padding: 4px 0; font-weight: 600; text-align: right;" id="itemVoidName">-</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 0; color: #666;">Quantity:</td>
+                            <td style="padding: 4px 0; font-weight: 600; text-align: right;" id="itemVoidQty">-</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 0; color: #666;">Price:</td>
+                            <td style="padding: 4px 0; font-weight: 600; text-align: right;" id="itemVoidPrice">-</td>
+                        </tr>
+                        <tr style="border-top: 1px solid #dee2e6;">
+                            <td style="padding: 8px 0 4px 0; color: #333; font-weight: 600;">Subtotal:</td>
+                            <td style="padding: 8px 0 4px 0; font-weight: 700; text-align: right; color: #d32f2f;" id="itemVoidSubtotal">-</td>
+                        </tr>
+                    </table>
+                </div>
+
+                <form id="itemVoidForm" onsubmit="handleItemVoid(event)">
+                    <div class="form-group">
+                        <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
+                            Admin Password <span style="color: #d32f2f;">*</span>
+                        </label>
+                        <input type="password" class="form-control" id="itemVoidAdminPassword" name="admin_password"
+                               placeholder="Enter admin password" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label style="font-weight: 600; display: block; margin-bottom: 8px; color: #333;">
+                            Void Reason <span style="color: #d32f2f;">*</span>
+                        </label>
+                        <textarea class="form-control" id="itemVoidReason" name="void_reason"
+                                  placeholder="Enter reason for voiding this item..." 
+                                  rows="3" required 
+                                  style="resize: vertical; font-family: inherit;"></textarea>
+                        <div style="font-size: 11px; color: #999; margin-top: 4px;">
+                            <span id="itemVoidCharCount">0</span>/500 characters
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 8px; margin-top: 20px;">
+                        <button type="button" class="btn btn-secondary" onclick="closeItemVoidModal()" style="flex: 1;">
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn btn-danger" style="flex: 1;">
+                            Void Item
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- Security: CSRF Token for AJAX requests -->
 <script>
@@ -1013,6 +1069,11 @@ if ($defaultCupsQuery) {
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     console.log('POS Page loaded successfully');
+    console.log('Cart functions available:', {
+        clearCartConfirm: typeof window.clearCartConfirm,
+        openSaleVoidModal: typeof window.openSaleVoidModal,
+        openCheckout: typeof window.openCheckout
+    });
     
     // Item Void Reason character counter
     const itemVoidReason = document.getElementById('itemVoidReason');

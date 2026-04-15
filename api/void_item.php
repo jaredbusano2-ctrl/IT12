@@ -37,12 +37,6 @@ if (isset($_SESSION['login_time'])) {
 
 $currentUser = getCurrentUser();
 
-// Only cashiers can initiate voids (admin can authorize via password)
-if (($currentUser['role'] ?? null) !== 'cashier') {
-    logActivity('void_forbidden', 'Non-cashier attempted to initiate a void operation', $currentUser['user_id'] ?? null);
-    jsonError('Only cashiers can void transactions.', 403);
-}
-
 // Verify CSRF token for API request
 $csrfToken = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
 if (!verifyCSRFToken($csrfToken)) {
@@ -102,7 +96,7 @@ if (!$adminId) {
         $lockoutRemaining = getVoidLockoutRemaining($clientIP);
         jsonError("Too many failed attempts. Please wait {$lockoutRemaining} seconds before trying again.", 429);
     }
-    
+
     jsonError('Invalid admin password', 401);
 }
 
@@ -114,121 +108,103 @@ switch ($voidType) {
         // Void cart before checkout (no sale record yet)
         $cartItems = $input['cart_items'] ?? [];
         $totalAmount = sanitizeFloat($input['total_amount'] ?? 0);
-        
+
         if (empty($cartItems)) {
             jsonError('Cart is empty', 400);
         }
-        
-        $result = voidCart($cartItems, $adminId, $currentUser['user_id'], $voidReason, $totalAmount);
+
+        $result = voidCart($cartItems, (int)$adminId, (int)$currentUser['user_id'], $voidReason, $totalAmount);
         break;
-    
+
     case 'cart_item':
         // Void single item from cart (before checkout)
         $item = $input['item'] ?? null;
-        
-        if (empty($item)) {
+
+        if (empty($item) || !is_array($item)) {
             jsonError('Item data is required', 400);
         }
-        
+
         // Wrap single item in array and use voidCart function
         $itemAmount = sanitizeFloat($item['subtotal'] ?? 0);
-        $result = voidCart([$item], $adminId, $currentUser['user_id'], $voidReason, $itemAmount);
+        $result = voidCart([$item], (int)$adminId, (int)$currentUser['user_id'], $voidReason, $itemAmount);
         break;
-        
+
     case 'item':
         // Void single sale item
         $saleItemId = sanitizeInt($input['sale_item_id'] ?? 0);
-        
+
         if ($saleItemId <= 0) {
             jsonError('Invalid sale item ID', 400);
         }
 
-        // Ownership enforcement: cashier can only void their own transactions
-        try {
-            $ownerRow = dbFetchOne(
-                "SELECT s.user_id FROM sale_items si JOIN sales s ON s.sale_id = si.sale_id WHERE si.sale_item_id = ?",
-                [$saleItemId]
-            );
-        } catch (Exception $e) {
-            error_log('void_item ownership check failed: ' . $e->getMessage());
-            jsonError('Unable to validate sale item ownership', 500);
+        // Cashier can only void their own transactions; admins can void any.
+        if (($currentUser['role'] ?? null) === 'cashier') {
+            try {
+                $ownerRow = dbFetchOne(
+                    "SELECT s.user_id FROM sale_items si JOIN sales s ON s.sale_id = si.sale_id WHERE si.sale_item_id = ?",
+                    [$saleItemId]
+                );
+            } catch (Exception $e) {
+                error_log('void_item ownership check failed: ' . $e->getMessage());
+                jsonError('Unable to validate sale item ownership', 500);
+            }
+
+            if (!$ownerRow) {
+                jsonError('Sale item not found', 404);
+            }
+
+            $ownerUserId = (int)($ownerRow['user_id'] ?? 0);
+            $currentUserId = (int)($currentUser['user_id'] ?? 0);
+            if ($ownerUserId !== $currentUserId) {
+                logActivity('void_forbidden', 'Cashier attempted to void a sale item not owned by them', $currentUserId);
+                jsonError('You can only void your own transactions.', 403);
+            }
         }
 
-        if (!$ownerRow) {
-            jsonError('Sale item not found', 404);
-        }
-
-        $ownerUserId = (int)($ownerRow['user_id'] ?? 0);
-        $currentUserId = (int)($currentUser['user_id'] ?? 0);
-        if ($ownerUserId !== $currentUserId) {
-            logActivity('void_forbidden', 'Cashier attempted to void a sale item not owned by them', $currentUserId);
-            jsonError('You can only void your own transactions.', 403);
-        }
-        
-        $result = voidSaleItem($saleItemId, $adminId, $currentUser['user_id'], $voidReason);
+        $result = voidSaleItem($saleItemId, (int)$adminId, (int)$currentUser['user_id'], $voidReason);
         break;
-        
+
     case 'sale':
         // Void entire sale
         $saleId = sanitizeInt($input['sale_id'] ?? 0);
-        
+
         if ($saleId <= 0) {
             jsonError('Invalid sale ID', 400);
         }
 
-        // Ownership enforcement: cashier can only void their own transactions
-        try {
-            $ownerRow = dbFetchOne(
-                "SELECT user_id FROM sales WHERE sale_id = ?",
-                [$saleId]
-            );
-        } catch (Exception $e) {
-            error_log('void_sale ownership check failed: ' . $e->getMessage());
-            jsonError('Unable to validate sale ownership', 500);
+        // Cashier can only void their own transactions; admins can void any.
+        if (($currentUser['role'] ?? null) === 'cashier') {
+            try {
+                $ownerRow = dbFetchOne(
+                    "SELECT user_id FROM sales WHERE sale_id = ?",
+                    [$saleId]
+                );
+            } catch (Exception $e) {
+                error_log('void_sale ownership check failed: ' . $e->getMessage());
+                jsonError('Unable to validate sale ownership', 500);
+            }
+
+            if (!$ownerRow) {
+                jsonError('Sale not found', 404);
+            }
+
+            $ownerUserId = (int)($ownerRow['user_id'] ?? 0);
+            $currentUserId = (int)($currentUser['user_id'] ?? 0);
+            if ($ownerUserId !== $currentUserId) {
+                logActivity('void_forbidden', 'Cashier attempted to void a sale not owned by them', $currentUserId);
+                jsonError('You can only void your own transactions.', 403);
+            }
         }
 
-        if (!$ownerRow) {
-            jsonError('Sale not found', 404);
-        }
-
-        $ownerUserId = (int)($ownerRow['user_id'] ?? 0);
-        $currentUserId = (int)($currentUser['user_id'] ?? 0);
-        if ($ownerUserId !== $currentUserId) {
-            logActivity('void_forbidden', 'Cashier attempted to void a sale not owned by them', $currentUserId);
-            jsonError('You can only void your own transactions.', 403);
-        }
-        
-        $result = voidEntireSale($saleId, $adminId, $currentUser['user_id'], $voidReason);
+        $result = voidEntireSale($saleId, (int)$adminId, (int)$currentUser['user_id'], $voidReason);
         break;
-        
+
     default:
         jsonError('Invalid void type', 400);
 }
 
 // Return response
 if ($result['success']) {
-    // Defense-grade audit trail (optional table).
-    // If your DB doesn't have audit_logs, this safely no-ops.
-    try {
-        $pdo = getPDO();
-        $targetDesc = '';
-        if ($voidType === 'sale') {
-            $targetDesc = 'Voided sale ID: ' . (int)($input['sale_id'] ?? 0);
-        } elseif ($voidType === 'item') {
-            $targetDesc = 'Voided sale item ID: ' . (int)($input['sale_item_id'] ?? 0);
-        } elseif ($voidType === 'cart_item') {
-            $targetDesc = 'Voided cart item';
-        } else {
-            $targetDesc = 'Voided cart';
-        }
-
-        $stmt = $pdo->prepare("INSERT INTO audit_logs (user_id, action, description) VALUES (?, 'VOID_TRANSACTION', ?)");
-        $stmt->execute([(int)($currentUser['user_id'] ?? 0), $targetDesc]);
-    } catch (Exception $e) {
-        // Intentionally ignore to avoid breaking the void flow
-        error_log('audit_logs insert skipped: ' . $e->getMessage());
-    }
-
     jsonSuccess($result, $result['message']);
 } else {
     jsonError($result['error'], 400);
